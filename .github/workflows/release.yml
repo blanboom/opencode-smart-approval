@@ -28,6 +28,9 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
+      # Trusted Publishing (OIDC) requires npm CLI 11.5.1+
+      - run: npm install -g npm@latest
+
       # Remove the _authToken line written by setup-node so npm CLI
       # falls back to OIDC trusted publishing instead of using an empty token.
       - run: sed -i '/_authToken/d' "${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
