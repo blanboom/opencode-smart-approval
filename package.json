@@ -1,0 +1,48 @@
+{
+  "name": "opencode-smart-approval",
+  "version": "0.1.0",
+  "description": "OpenCode smart command approval plugin with deterministic rules, optional risk scanning, and an AI SDK reviewer.",
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "bun test test"
+  },
+  "dependencies": {
+    "@ai-sdk/openai-compatible": "3.0.5",
+    "@opencode-ai/plugin": "1.4.1",
+    "ai": "7.0.15",
+    "zod": "4.1.13"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.14",
+    "@types/node": "26.1.0",
+    "typescript": "6.0.3"
+  },
+  "keywords": [
+    "opencode",
+    "plugin",
+    "approval",
+    "permissions",
+    "security"
+  ],
+  "license": "MIT",
+  "author": "blanboom",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/blanboom/opencode-smart-approval.git"
+  },
+  "homepage": "https://github.com/blanboom/opencode-smart-approval",
+  "bugs": {
+    "url": "https://github.com/blanboom/opencode-smart-approval/issues"
+  }
+}
