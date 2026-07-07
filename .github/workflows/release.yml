@@ -28,6 +28,10 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
+      # Remove the _authToken line written by setup-node so npm CLI
+      # falls back to OIDC trusted publishing instead of using an empty token.
+      - run: sed -i '/_authToken/d' "${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
+
       - run: npm publish --access public --provenance
 
       - name: Create GitHub Release
