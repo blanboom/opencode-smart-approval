@@ -42,7 +42,12 @@ npm install -g opencode-smart-approval
 
 ## 配置
 
-创建 `~/.config/opencode/command-approval.jsonc`（支持 JSONC 注释）：
+配置分两层加载：
+
+1. **全局** — `~/.config/opencode/command-approval.jsonc`（或 `$XDG_CONFIG_HOME/opencode/`）。首次运行时如不存在则自动生成默认配置。
+2. **本地** — 项目目录下的 `./command-approval.jsonc`。如果存在，**完全替代**全局配置（不合并）。
+
+创建全局配置（支持 JSONC 注释）：
 
 ```jsonc
 {
@@ -75,7 +80,7 @@ npm install -g opencode-smart-approval
 }
 ```
 
-文件不存在时插件首次运行自动生成默认配置。`review` 端点独立配置——插件不读取 OpenCode 自身的模型/认证配置。
+文件不存在时插件首次运行自动生成默认配置。`review` 端点独立配置——插件不读取 OpenCode 自身的模型/认证配置。项目目录下的 `./command-approval.jsonc` 如果存在，完全替代全局配置。
 
 ### 选项
 

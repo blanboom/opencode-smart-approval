@@ -42,7 +42,12 @@ npm install -g opencode-smart-approval
 
 ## Configure
 
-Create `~/.config/opencode/command-approval.jsonc` (JSONC — comments supported):
+The plugin loads config in two tiers:
+
+1. **Global** — `~/.config/opencode/command-approval.jsonc` (or `$XDG_CONFIG_HOME/opencode/`). Created with defaults on first run if missing.
+2. **Local** — `./command-approval.jsonc` in the project directory. If present, it **fully replaces** the global config (no merging).
+
+Create the global config (JSONC — comments supported):
 
 ```jsonc
 {
@@ -75,7 +80,7 @@ Create `~/.config/opencode/command-approval.jsonc` (JSONC — comments supported
 }
 ```
 
-If the file doesn't exist, the plugin generates a default config on first run. The `review` endpoint is independent — the plugin never reads OpenCode's own model/auth config.
+If the file doesn't exist, the plugin generates a default config on first run. The `review` endpoint is independent — the plugin never reads OpenCode's own model/auth config. A local `./command-approval.jsonc` in the project directory, if present, fully replaces the global config.
 
 ### Options
 
