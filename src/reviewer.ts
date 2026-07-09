@@ -126,7 +126,7 @@ export const reviewWithAiSdk = async (
       stopWhen: isStepCount(policy.review.maxToolCalls > 0 ? policy.review.maxToolCalls + 1 : 1),
       temperature: 0,
       maxOutputTokens: 1000,
-      maxRetries: 0,
+      maxRetries: policy.review.maxRetries,
       abortSignal: AbortSignal.timeout(policy.review.timeoutMs),
     });
 

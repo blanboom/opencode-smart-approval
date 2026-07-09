@@ -137,6 +137,8 @@ export const DEFAULT_REVIEW_CONNECTION = {
   model: "",
 } as const satisfies DefaultReviewConnection;
 
+export const DEFAULT_REVIEW_MAX_RETRIES = 3;
+
 export const DEFAULT_RISK_TOOL = {
   enabled: true,
   timeoutMs: 5_000,
@@ -151,6 +153,7 @@ export const defaultPolicy = (connection: DefaultReviewConnection = DEFAULT_REVI
     timeoutMs: 45_000,
     maxScriptBytes: 20_000,
     maxToolCalls: 3,
+    maxRetries: DEFAULT_REVIEW_MAX_RETRIES,
     contextMessages: 20,
     prompt: DEFAULT_REVIEWER_POLICY,
   },
@@ -166,6 +169,7 @@ const defaultConfigObject = (connection: DefaultReviewConnection = DEFAULT_REVIE
     timeout_ms: 45_000,
     max_script_bytes: 20_000,
     max_tool_calls: 3,
+    max_retries: DEFAULT_REVIEW_MAX_RETRIES,
     context_messages: 20
   },
   tirith: {
@@ -188,6 +192,7 @@ export const defaultConfigJson = (connection: DefaultReviewConnection = DEFAULT_
     "// Any command that matches neither group is reviewed by the configured OpenAI-compatible endpoint.",
     "// Set review.base_url, review.api_key, and review.model explicitly; OpenCode config is not read for LLM review.",
     "// review.max_tool_calls: max read-only tool invocations per review (0 disables tools, default 3).",
+    "// review.max_retries: max LLM API retries after the first request (integer 0-10, 0 disables, default 3).",
     "// review.context_messages: recent session messages injected as transcript (0 disables, default 20).",
     "// review.prompt: override the default reviewer policy text (optional).",
   ].join("\n");

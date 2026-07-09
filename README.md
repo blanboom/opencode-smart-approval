@@ -58,6 +58,7 @@ Create the global config (JSONC — comments supported):
     "timeout_ms": 45000,
     "max_script_bytes": 20000,
     "max_tool_calls": 3,
+    "max_retries": 3,
     "context_messages": 20
     // "prompt": "..."  // override the default reviewer policy
   },
@@ -92,6 +93,7 @@ If the file doesn't exist, the plugin generates a default config on first run. T
 | `review.timeout_ms` | `45000` | LLM review timeout (5000–300000). |
 | `review.max_script_bytes` | `20000` | Max script content sent to reviewer. |
 | `review.max_tool_calls` | `3` | Max read-only tool invocations per review (0–10, 0 disables tools). |
+| `review.max_retries` | `3` | Max LLM API retries after the first request (integer 0–10, 0 disables retries). |
 | `review.context_messages` | `20` | Recent session messages injected as transcript (0–100, 0 disables). |
 | `review.prompt` | built-in | Override the reviewer policy text. See [LLM review](#llm-review). |
 | `tirith.enabled` | `true` | Enable Tirith scanning. |

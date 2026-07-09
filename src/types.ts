@@ -25,6 +25,7 @@ export type ReviewConfig = {
   readonly timeoutMs: number;
   readonly maxScriptBytes: number;
   readonly maxToolCalls: number;
+  readonly maxRetries: number;
   readonly contextMessages: number;
   readonly prompt: string;
 };

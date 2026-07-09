@@ -58,6 +58,7 @@ npm install -g opencode-smart-approval
     "timeout_ms": 45000,
     "max_script_bytes": 20000,
     "max_tool_calls": 3,
+    "max_retries": 3,
     "context_messages": 20
     // "prompt": "..."  // 覆盖默认审查策略
   },
@@ -92,6 +93,7 @@ npm install -g opencode-smart-approval
 | `review.timeout_ms` | `45000` | LLM 审查超时（5000–300000）。 |
 | `review.max_script_bytes` | `20000` | 发送给审查器的脚本最大字节数。 |
 | `review.max_tool_calls` | `3` | 每次审查的只读工具调用上限（0–10，0 禁用工具）。 |
+| `review.max_retries` | `3` | 首次请求后的 LLM API 最大重试次数（0–10 整数，0 禁用重试）。 |
 | `review.context_messages` | `20` | 注入为对话上下文的近期会话消息数（0–100，0 禁用）。 |
 | `review.prompt` | 内置 | 覆盖审查策略文本。详见 [LLM 审查](#llm-审查)。 |
 | `tirith.enabled` | `true` | 启用 Tirith 扫描。 |
