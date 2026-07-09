@@ -1,3 +1,4 @@
 node_modules/
 .tirith-cache/
 *.tgz
+.omo/
