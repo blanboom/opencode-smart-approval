@@ -27,8 +27,7 @@ jobs:
         with:
           node-version: 22
 
-      # Trusted Publishing (OIDC) requires npm CLI 11.5.1+
-      - run: npm install -g npm@latest
+      - run: npm install -g npm@11.5.1
 
       - run: npm publish --access public --provenance
 
