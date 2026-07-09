@@ -27,7 +27,7 @@ jobs:
         with:
           node-version: 22
 
-      - run: npm install -g npm@11.5.1
+      - run: npm install -g npm@11.18.0
 
       - run: npm publish --access public --provenance
 
