@@ -84,14 +84,6 @@ Create the global config (JSONC — comments supported):
 
 If the file doesn't exist, the plugin generates a default config on first run. The `review` endpoint is independent — the plugin never reads OpenCode's own model/auth config.
 
-Project-local config is disabled by default. To retain the legacy full-replacement behavior, set `"allow_local_config": true` in the trusted global file. A project-local file cannot enable this permission for itself. Enabling it applies to every project you open, so use it only when all of those projects and their config files are trusted.
-
-### Upgrading from v0.2.4 or earlier
-
-Earlier releases always preferred a project-local `command-approval.jsonc` or legacy `command-approval.json`. Starting with v0.3.0, both files are ignored by default so an untrusted repository cannot replace your global reviewer, Tirith settings, or approval rules.
-
-The safest migration is to move trusted project settings into the global file and remove the local policy. If every project you open is trusted and you need the previous behavior, set `"allow_local_config": true` in the global file; this delegates the entire policy to each project, including reviewer credentials, Tirith behavior, and allow rules.
-
 ### Options
 
 | Option | Default | Description |
