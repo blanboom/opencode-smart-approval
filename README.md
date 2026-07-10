@@ -42,15 +42,16 @@ npm install -g opencode-smart-approval
 
 ## Configure
 
-The plugin loads config in two tiers:
+The plugin loads the global config as the trusted policy boundary:
 
 1. **Global** — `~/.config/opencode/command-approval.jsonc` (or `$XDG_CONFIG_HOME/opencode/`). Created with defaults on first run if missing.
-2. **Local** — `./command-approval.jsonc` in the project directory. If present, it **fully replaces** the global config (no merging).
+2. **Local** — `./command-approval.jsonc` in the project directory. Ignored by default because project files may be untrusted. It only replaces the global config when the global file explicitly sets `"allow_local_config": true`.
 
 Create the global config (JSONC — comments supported):
 
 ```jsonc
 {
+  "allow_local_config": false,
   "review": {
     "base_url": "https://api.openai.com/v1",
     "api_key": "sk-...",
@@ -81,12 +82,21 @@ Create the global config (JSONC — comments supported):
 }
 ```
 
-If the file doesn't exist, the plugin generates a default config on first run. The `review` endpoint is independent — the plugin never reads OpenCode's own model/auth config. A local `./command-approval.jsonc` in the project directory, if present, fully replaces the global config.
+If the file doesn't exist, the plugin generates a default config on first run. The `review` endpoint is independent — the plugin never reads OpenCode's own model/auth config.
+
+Project-local config is disabled by default. To retain the legacy full-replacement behavior, set `"allow_local_config": true` in the trusted global file. A project-local file cannot enable this permission for itself. Enabling it applies to every project you open, so use it only when all of those projects and their config files are trusted.
+
+### Upgrading from v0.2.4 or earlier
+
+Earlier releases always preferred a project-local `command-approval.jsonc` or legacy `command-approval.json`. Starting with v0.3.0, both files are ignored by default so an untrusted repository cannot replace your global reviewer, Tirith settings, or approval rules.
+
+The safest migration is to move trusted project settings into the global file and remove the local policy. If every project you open is trusted and you need the previous behavior, set `"allow_local_config": true` in the global file; this delegates the entire policy to each project, including reviewer credentials, Tirith behavior, and allow rules.
 
 ### Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
+| `allow_local_config` | `false` | Allow project-local config to fully replace the global policy. Read only from the trusted global file. |
 | `review.base_url` | — | OpenAI-compatible endpoint URL. **Required.** |
 | `review.api_key` | — | API key. **Required.** |
 | `review.model` | — | Model name. **Required.** |

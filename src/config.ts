@@ -82,31 +82,21 @@ const resolveLocal = (directory: string): LoadOutcome | undefined => {
   return undefined;
 };
 
+const isConfigRecord = (value: unknown): value is Record<string, unknown> => {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+};
+
+const allowsLocalConfig = (value: unknown): boolean => {
+  if (!isConfigRecord(value)) return false;
+  if (!Object.hasOwn(value, "allow_local_config")) return false;
+  const candidate = value["allow_local_config"];
+  if (typeof candidate !== "boolean") throw new Error("allow_local_config must be a boolean");
+  return candidate;
+};
+
 export const loadOrInitializePolicy = (directory: string): PolicyLoadResult => {
   const fallbackRules = defaultPolicy().rules;
 
-  // Local config takes priority if it exists.
-  const local = resolveLocal(directory);
-  if (local) {
-    if (!local.ok) {
-      return {
-        ok: false,
-        policy: defaultPolicy(),
-        path: local.path,
-        initialized: false,
-        error: local.error ?? "local policy load failed",
-      };
-    }
-    try {
-      const policy = policyFromUnknown(local.data, fallbackRules);
-      return { ok: true, policy, path: local.path, initialized: false };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "unknown policy load failure";
-      return { ok: false, policy: defaultPolicy(), path: local.path, initialized: false, error: message };
-    }
-  }
-
-  // Fall back to global config, initializing if missing.
   const global = resolveGlobal();
   if (!global.ok) {
     return {
@@ -118,11 +108,38 @@ export const loadOrInitializePolicy = (directory: string): PolicyLoadResult => {
     };
   }
 
+  let trustedGlobal: { readonly policy: ResolvedPolicy; readonly allowLocalConfig: boolean };
   try {
     const policy = policyFromUnknown(global.data, fallbackRules);
-    return { ok: true, policy, path: global.path, initialized: global.initialized };
+    const allowLocalConfig = allowsLocalConfig(global.data);
+    trustedGlobal = { policy, allowLocalConfig };
   } catch (error) {
     const message = error instanceof Error ? error.message : "unknown policy load failure";
     return { ok: false, policy: defaultPolicy(), path: global.path, initialized: global.initialized, error: message };
+  }
+
+  if (!trustedGlobal.allowLocalConfig) {
+    return { ok: true, policy: trustedGlobal.policy, path: global.path, initialized: global.initialized };
+  }
+
+  const local = resolveLocal(directory);
+  if (!local) {
+    return { ok: true, policy: trustedGlobal.policy, path: global.path, initialized: global.initialized };
+  }
+  if (!local.ok) {
+    return {
+      ok: false,
+      policy: defaultPolicy(),
+      path: local.path,
+      initialized: false,
+      error: local.error ?? "local policy load failed",
+    };
+  }
+  try {
+    const policy = policyFromUnknown(local.data, fallbackRules);
+    return { ok: true, policy, path: local.path, initialized: false };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "unknown policy load failure";
+    return { ok: false, policy: defaultPolicy(), path: local.path, initialized: false, error: message };
   }
 };

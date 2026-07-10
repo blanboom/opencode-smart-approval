@@ -55,6 +55,6 @@ export const writeLocalPolicy = (directory: string, policy: JsonObject | string)
   writeFileSync(join(directory, POLICY_FILE_NAME), typeof policy === "string" ? policy : JSON.stringify(policy));
 };
 
-export const writeGlobalPolicy = (policy: JsonObject): void => {
-  writeFileSync(join(xdgConfigHome(), "opencode", POLICY_FILE_NAME), JSON.stringify(policy));
+export const writeGlobalPolicy = (policy: JsonObject | string): void => {
+  writeFileSync(join(xdgConfigHome(), "opencode", POLICY_FILE_NAME), typeof policy === "string" ? policy : JSON.stringify(policy));
 };

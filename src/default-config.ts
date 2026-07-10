@@ -162,6 +162,7 @@ export const defaultPolicy = (connection: DefaultReviewConnection = DEFAULT_REVI
 });
 
 const defaultConfigObject = (connection: DefaultReviewConnection = DEFAULT_REVIEW_CONNECTION) => ({
+  allow_local_config: false,
   review: {
     base_url: "https://api.example.com/v1",
     api_key: "your-api-key",
@@ -187,6 +188,8 @@ const defaultConfigObject = (connection: DefaultReviewConnection = DEFAULT_REVIE
 export const defaultConfigJson = (connection: DefaultReviewConnection = DEFAULT_REVIEW_CONNECTION): string => {
   const header = [
     "// CommandApproval config. JSON with comments are supported.",
+    "// Project-local config is ignored unless this trusted global file sets allow_local_config to true.",
+    "// Enabling it lets every project fully replace this policy; use it only when all opened projects are trusted.",
     "// block rules deny immediately; review rules force LLM review; allow rules skip LLM review.",
     "// tirith uses a configured path or auto-downloads a supported OS/arch binary to a temp cache.",
     "// Any command that matches neither group is reviewed by the configured OpenAI-compatible endpoint.",

@@ -7,7 +7,7 @@ import { DEFAULT_REVIEWER_POLICY } from "./prompt";
 import type { ApprovalPolicy, CommandRule, ReviewConfig, RiskToolConfig, RuleDecision } from "./types";
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
-  return typeof value === "object" && value !== null;
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 };
 
 export const stripJsonComments = (text: string): string => {

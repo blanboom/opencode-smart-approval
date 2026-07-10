@@ -5,7 +5,7 @@ import {
   reviewFixture,
   tempDir,
   withXdg,
-  writeLocalPolicy,
+  writeGlobalPolicy,
 } from "./policy-test-helpers";
 
 const acceptedRetryCases = [
@@ -44,11 +44,10 @@ describe("policy review retries", () => {
   for (const retryCase of acceptedRetryCases) {
     test(`loads explicit reviewer retry count from ${retryCase.name} config`, () => {
       const directory = tempDir();
-      writeLocalPolicy(
-        directory,
-        policyFixture(reviewFixture({ [retryCase.field]: retryCase.value })),
-      );
-      const loaded = withXdg(() => loadOrInitializePolicy(directory));
+      const loaded = withXdg(() => {
+        writeGlobalPolicy(policyFixture(reviewFixture({ [retryCase.field]: retryCase.value })));
+        return loadOrInitializePolicy(directory);
+      });
       expect(loaded.ok).toBe(true);
       expect(loaded.policy.review.maxRetries).toBe(retryCase.expected);
     });
@@ -57,11 +56,10 @@ describe("policy review retries", () => {
   for (const retryCase of rejectedRetryCases) {
     test(`rejects reviewer retry count with ${retryCase.name}`, () => {
       const directory = tempDir();
-      writeLocalPolicy(
-        directory,
-        policyFixture(reviewFixture({ [retryCase.field]: retryCase.value })),
-      );
-      const loaded = withXdg(() => loadOrInitializePolicy(directory));
+      const loaded = withXdg(() => {
+        writeGlobalPolicy(policyFixture(reviewFixture({ [retryCase.field]: retryCase.value })));
+        return loadOrInitializePolicy(directory);
+      });
       expect(loaded.ok).toBe(false);
       if (loaded.ok) throw new Error(`${retryCase.name} should fail policy loading`);
       expect(loaded.error).toContain(retryCase.expected);

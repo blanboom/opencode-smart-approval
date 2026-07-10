@@ -37,6 +37,7 @@ describe("policy loading", () => {
     expect(result.configFile).toContain("// CommandApproval config");
     expect(result.configFile).not.toContain('"id"');
     expect(JSON.parse(stripJsonComments(result.configFile))).toMatchObject({
+      allow_local_config: false,
       review: { max_retries: 3 },
       tirith: { enabled: true },
       rules: { allow: expect.any(Array), block: expect.any(Array) },
@@ -63,46 +64,13 @@ describe("policy loading", () => {
     expect(loaded.policy.review.model).toBe("global-model");
   });
 
-  test("local config takes priority over global config", () => {
-    const directory = tempDir();
-    writeLocalPolicy(directory, {
-      review: reviewFixture({
-        base_url: "https://local.example.com/v1",
-        api_key: "local-key",
-        model: "local-model",
-      }),
-      tirith: { enabled: false, timeout_ms: 5_000, fail_open: true },
-      rules: { block: ["^block-local$"], allow: ["^allow-local$"] },
-    });
-    const loaded = withXdg(() => {
-      writeGlobalPolicy({
-        review: reviewFixture({
-          base_url: "https://global.example.com/v1",
-          api_key: "global-key",
-          model: "global-model",
-        }),
-        rules: { block: ["^block-global$"], review: ["^review-global$"], allow: ["^allow-global$"] },
-      });
-      return loadOrInitializePolicy(directory);
-    });
-    expect(loaded.ok).toBe(true);
-    expect(loaded.policy.review.baseURL).toBe("https://local.example.com/v1");
-    expect(loaded.policy.review.apiKey).toBe("local-key");
-    expect(loaded.policy.review.model).toBe("local-model");
-    expect(loaded.policy.riskTool.enabled).toBe(false);
-    expect(loaded.policy.riskTool.failOpen).toBe(true);
-    expect(loaded.policy.rules.filter((rule) => rule.label.startsWith("block[")).map((rule) => rule.match)).toEqual([
-      "^block-local$",
-    ]);
-    expect(loaded.policy.rules.filter((rule) => rule.label.startsWith("allow[")).map((rule) => rule.match)).toEqual([
-      "^allow-local$",
-    ]);
-  });
-
   test("loads explicit reviewer endpoint, key, and model from local override", () => {
     const directory = tempDir();
     writeLocalPolicy(directory, policyFixture());
-    const loaded = withXdg(() => loadOrInitializePolicy(directory));
+    const loaded = withXdg(() => {
+      writeGlobalPolicy({ allow_local_config: true });
+      return loadOrInitializePolicy(directory);
+    });
     expect(loaded.ok).toBe(true);
     expect(loaded.policy.review.baseURL).toBe("https://example.com/v1");
     expect(loaded.policy.review.apiKey).toBe("test-key");
@@ -147,7 +115,10 @@ describe("policy loading", () => {
 }
 `,
     );
-    const loaded = withXdg(() => loadOrInitializePolicy(directory));
+    const loaded = withXdg(() => {
+      writeGlobalPolicy({ allow_local_config: true });
+      return loadOrInitializePolicy(directory);
+    });
     expect(loaded.ok).toBe(true);
     expect(loaded.policy.rules[0]?.label).toBe("block[0]");
     expect(loaded.policy.rules[0]?.reason).toBe("test denial");
@@ -165,7 +136,10 @@ describe("policy loading", () => {
 }
 `,
     );
-    const loaded = withXdg(() => loadOrInitializePolicy(directory));
+    const loaded = withXdg(() => {
+      writeGlobalPolicy({ allow_local_config: true });
+      return loadOrInitializePolicy(directory);
+    });
     expect(loaded.ok).toBe(true);
     expect(loaded.policy.rules.map((rule) => ({ decision: rule.decision, label: rule.label, reason: rule.reason })).slice(0, 2)).toEqual([
       { decision: "block", label: "block[0]", reason: undefined },
