@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { effectiveInvocation, invocationFromSegment } from "../src/command-invocation";
 import { evaluateExecutableGuard } from "../src/path-safety";
 import { analyzeShell } from "../src/shell-analysis";
+import { expectStructurallyAllowedOrHostUnavailable } from "./host-aware-policy-expectation";
 import { evaluate } from "./mandatory-guards-helpers";
 
 describe("mandatory path and executable safety", () => {
@@ -85,7 +86,7 @@ describe("mandatory path and executable safety", () => {
     const safeRoot = mkdtempSync(join(tmpdir(), "approval-rg-recursive-safe-"));
     mkdirSync(join(safeRoot, "src"));
     writeFileSync(join(safeRoot, "src", "main.ts"), "const value = 'needle';\n");
-    expect((await evaluate("rg needle .", false, safeRoot)).decision).toBe("allow");
+    await expectStructurallyAllowedOrHostUnavailable("rg needle .", await evaluate("rg needle .", false, safeRoot));
     rmSync(safeRoot, { recursive: true, force: true });
   });
 
@@ -171,6 +172,19 @@ describe("mandatory path and executable safety", () => {
       ? evaluateExecutableGuard(effectiveInvocation(invocationFromSegment(segment)), cwd, cwd)
       : undefined;
     expect(finding?.decision).toBe("review");
+    expect(finding?.category.id).toBe("policy.review.guard.executable_identity");
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  test("reviews a PATH-first protected command symlinked to a different trusted executable", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "approval-command-identity-symlink-"));
+    symlinkSync("/bin/sh", join(cwd, "rg"));
+    const segment = (await analyzeShell("rg -c 'printf exploit-would-run'")).segments[0];
+    const finding = segment
+      ? evaluateExecutableGuard(effectiveInvocation(invocationFromSegment(segment)), cwd, cwd)
+      : undefined;
+    expect(finding?.decision).toBe("review");
+    expect(finding?.category.id).toBe("policy.review.guard.executable_identity");
     rmSync(cwd, { recursive: true, force: true });
   });
 
@@ -196,6 +210,7 @@ describe("mandatory path and executable safety", () => {
       ? evaluateExecutableGuard(effectiveInvocation(invocationFromSegment(segment)), cwd, "/missing")
       : undefined;
     expect(finding?.decision).toBe("review");
+    expect(finding?.category.id).toBe("policy.review.guard.executable_unavailable");
     rmSync(cwd, { recursive: true, force: true });
   });
 });

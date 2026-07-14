@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { expectStructurallyAllowedOrHostUnavailable } from "./host-aware-policy-expectation";
 import { evaluate } from "./mandatory-guards-helpers";
 
 describe("safe counterparts to mandatory no-sandbox guards", () => {
@@ -65,14 +66,14 @@ describe("safe counterparts to mandatory no-sandbox guards", () => {
     "(echo hi) > /tmp/opencode-approval-output",
     "{ echo hi; } > /tmp/opencode-approval-output",
     "echo hi | grep hi > /tmp/opencode-approval-output",
-  ])("allows a structurally safe counterpart: %s", async (command) => {
-    expect((await evaluate(command)).decision).toBe("allow");
+  ])("matches the allow policy for a structurally safe counterpart: %s", async (command) => {
+    await expectStructurallyAllowedOrHostUnavailable(command, await evaluate(command));
   });
 
   test.each(["xcrun --run -f rm", "xcrun swift -typecheck Source.swift"])(
-    "allows a safe xcrun counterpart under an explicit user allow: %s",
+    "matches the allow policy for a safe xcrun counterpart: %s",
     async (command) => {
-      expect((await evaluate(command, true)).decision).toBe("allow");
+      await expectStructurallyAllowedOrHostUnavailable(command, await evaluate(command, true));
     },
   );
 

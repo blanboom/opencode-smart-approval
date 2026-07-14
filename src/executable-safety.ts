@@ -13,8 +13,15 @@ const protectedExecutables = new Set([
 
 const shellBuiltins = new Set(["[", "command", "echo", "false", "printf", "pwd", "test", "true"]);
 
+const trustedCanonicalAliases = new Map<string, ReadonlySet<string>>([
+  ["egrep", new Set(["grep"])],
+  ["fgrep", new Set(["grep"])],
+  ["swift", new Set(["swift-driver"])],
+]);
+
 const trustedRoots = [
   "/bin", "/usr/bin", "/sbin", "/usr/sbin", "/usr/local", "/opt/homebrew", "/opt/local",
+  "/usr/share/swift/usr/bin",
   "/Applications/ChatGPT.app/Contents/Resources", "/Applications/OpenCode.app/Contents/Resources",
 ];
 
@@ -37,7 +44,12 @@ const within = (root: string, target: string): boolean => {
   return path === "" || (!path.startsWith("..") && !isAbsolute(path));
 };
 
-const executablePath = (commandName: string, cwd: string, pathValue: string): string | undefined => {
+type ExecutablePath = {
+  readonly candidate: string;
+  readonly canonical: string;
+};
+
+const executablePath = (commandName: string, cwd: string, pathValue: string): ExecutablePath | undefined => {
   const candidates = commandName.includes("/")
     ? [resolve(cwd, commandName)]
     : [
@@ -49,7 +61,7 @@ const executablePath = (commandName: string, cwd: string, pathValue: string): st
   for (const candidate of candidates) {
     try {
       accessSync(candidate, constants.X_OK);
-      return safelyRealpath(candidate);
+      return { candidate, canonical: safelyRealpath(candidate) };
     } catch (error) {
       if (!(error instanceof Error)) throw error;
     }
@@ -68,9 +80,15 @@ export const evaluateExecutableGuard = (
     return undefined;
   }
   const executable = executablePath(invocation.commandName, cwd, pathValue);
-  const trusted = executable && trustedRoots.some((root) => within(root, executable));
-  if (!trusted) {
-    return guardFinding("review", "executable_identity", "command does not resolve to a trusted system executable");
+  if (!executable) {
+    return guardFinding("review", "executable_unavailable", "command does not resolve to an installed system executable");
+  }
+  const candidateTrusted = trustedRoots.some((root) => within(root, executable.candidate));
+  const canonicalTrusted = trustedRoots.some((root) => within(root, executable.canonical));
+  const canonicalName = commandBasename({ ...invocation, commandName: executable.canonical });
+  const identityTrusted = canonicalName === name || trustedCanonicalAliases.get(name)?.has(canonicalName) === true;
+  if (!candidateTrusted || !canonicalTrusted || !identityTrusted) {
+    return guardFinding("review", "executable_identity", "command path or canonical executable identity is not trusted");
   }
   return undefined;
 };

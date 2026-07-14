@@ -1,5 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { describe, test } from "bun:test";
 import { evaluateRules } from "../src/rules";
+import { expectStructurallyAllowedOrHostUnavailable } from "./host-aware-policy-expectation";
 import { userPolicy } from "./user-command-policy-helpers";
 
 describe("Codex-derived user command allow policy", () => {
@@ -36,9 +37,8 @@ describe("Codex-derived user command allow policy", () => {
     "xcrun swift -typecheck Source.swift",
     "xcrun --find rm",
     "xcodebuildmcp tools > /tmp/xcodebuildmcp-tools.json",
-  ])("allows explicitly trusted user command: %s", async (command) => {
+  ])("matches the allow policy for an explicitly trusted user command: %s", async (command) => {
     const evaluation = await evaluateRules(userPolicy().rules, { command });
-    const expected = process.platform !== "darwin" && command.startsWith("xcrun ") ? "review" : "allow";
-    expect(evaluation.decision).toBe(expected);
+    await expectStructurallyAllowedOrHostUnavailable(command, evaluation);
   });
 });

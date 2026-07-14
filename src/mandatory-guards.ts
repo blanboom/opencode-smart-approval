@@ -28,7 +28,7 @@ import { hasShortOption, type ShortOptionRole } from "./short-options";
 import { shellInputInvocations, shellNames, shellNeedsExecutionReview } from "./shell-invocation";
 import type { ShellAnalysis, ShellSegment } from "./types";
 import { evaluateVcsGuard } from "./vcs-guards";
-import { resolveXcrunTool, xcrunDispatchNeedsReview } from "./xcrun-trust";
+import { resolveXcrunTool, xcrunDispatchReview } from "./xcrun-trust";
 
 export type { GuardFinding } from "./guard-types";
 
@@ -72,8 +72,9 @@ const commonReview = (segment: ShellSegment, invocation: CommandInvocation, cwd:
     return guardFinding("review", "nested_shell", "nested shell startup state is outside static command analysis");
   }
   if (["fish", "powershell", "pwsh"].includes(name)) return guardFinding("review", "alternate_shell", "non-Bash shell execution cannot be statically analyzed");
-  if (name === "xcrun" && xcrunDispatchNeedsReview(invocation, segment.environment)) {
-    return guardFinding("review", "xcrun_dispatch", "xcrun resolves this tool outside the selected Xcode developer directory");
+  if (name === "xcrun") {
+    const xcrunReview = xcrunDispatchReview(invocation, segment.environment);
+    if (xcrunReview) return guardFinding("review", xcrunReview.category, xcrunReview.reason);
   }
   if (swiftInvocationNeedsReview(name, args)) {
     return guardFinding("review", "swift_script", "Swift script execution requires contextual review");
