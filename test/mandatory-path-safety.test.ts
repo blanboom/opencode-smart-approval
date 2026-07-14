@@ -176,15 +176,15 @@ describe("mandatory path and executable safety", () => {
     rmSync(cwd, { recursive: true, force: true });
   });
 
-  test("reviews a PATH-first protected command symlinked to a different trusted executable", async () => {
+  test("blocks a PATH-first protected command symlinked to a different trusted executable", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "approval-command-identity-symlink-"));
     symlinkSync("/bin/sh", join(cwd, "rg"));
     const segment = (await analyzeShell("rg -c 'printf exploit-would-run'")).segments[0];
     const finding = segment
       ? evaluateExecutableGuard(effectiveInvocation(invocationFromSegment(segment)), cwd, cwd)
       : undefined;
-    expect(finding?.decision).toBe("review");
-    expect(finding?.category.id).toBe("policy.review.guard.executable_identity");
+    expect(finding?.decision).toBe("block");
+    expect(finding?.category.id).toBe("policy.block.guard.executable_identity");
     rmSync(cwd, { recursive: true, force: true });
   });
 

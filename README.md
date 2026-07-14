@@ -103,7 +103,7 @@ If the file doesn't exist, the plugin generates a default config on first run. T
 | `review.timeout_ms` | `45000` | LLM review timeout (5000–300000). |
 | `review.max_script_bytes` | `20000` | Max script content sent to reviewer. |
 | `review.max_tool_calls` | `3` | Max read-only tool invocations per review (0–10, 0 disables tools). |
-| `review.max_retries` | `3` | Max LLM API retries after the first request (integer 0–10, 0 disables retries). |
+| `review.max_retries` | `3` | Max LLM API transport retries per request (integer 0–10). A positive value also permits one fresh request after malformed structured output; 0 disables both. |
 | `review.context_messages` | `20` | Recent session messages injected as transcript (0–100, 0 disables). |
 | `review.prompt` | built-in | Override the reviewer policy text. See [LLM review](#llm-review). |
 | `tirith.enabled` | `true` | Enable Tirith scanning. |
@@ -154,6 +154,8 @@ Static nested shell bodies are still reviewed even when their inner commands are
 
 The reviewer receives: command, cwd, tool args, matched rules, Tirith findings, script evidence, and recent conversation transcript. It returns a structured verdict (`outcome`, `risk_level`, `user_authorization`, `categories`, `reasons`).
 
+Malformed or schema-invalid structured output gets one fresh format-correction request when retries are enabled. A second invalid response, or an invalid first response when retries are disabled, fails closed.
+
 ### Read-only tools
 
 The reviewer has two tools to verify local state before deciding:
@@ -177,9 +179,9 @@ When the reviewer denies, `reasons` are passed back to OpenCode as a `CommandApp
 
 ## Built-in rules
 
-**Mandatory block** — credential files and sensitive globs (case-folded, canonicalized through symlinks, and recognized in Git object paths and hidden recursive searches), secret expansion (including jq `env`/`$ENV`), pipe-to-shell anywhere in a pipeline sink subtree, keychain secrets, `sudo`, environment dumps (including Apple tools such as `ipatool` that dump the process environment on startup or error paths), destructive disk/filesystem operations, git hook bypasses, destructive pushes, GitHub token/admin/auth/secret operations, and nested unattended agents. Quoted/escaped command names plus `command`, `exec`, `time`, `env`, `builtin`, and BusyBox dispatch are normalized before these guards.
+**Mandatory block** — credential files and sensitive globs (case-folded, canonicalized through symlinks, and recognized in Git object paths and hidden recursive searches), secret expansion (including jq `env`/`$ENV`), pipe-to-shell anywhere in a pipeline sink subtree, keychain secrets, `sudo`, environment dumps (including Apple tools such as `ipatool` that dump the process environment on startup or error paths), destructive disk/filesystem operations, git hook bypasses, destructive pushes, GitHub token/admin/auth/secret operations, nested unattended agents, and protected command names whose PATH-selected canonical executable has a different identity (except explicit trusted aliases). Quoted/escaped command names plus `command`, `exec`, `time`, `env`, `builtin`, and BusyBox dispatch are normalized before these guards.
 
-**Mandatory review** — write/execute/indirect-input options such as ripgrep helpers, archive decompression and symlink following; `sort` output/temp/list inputs; checksum manifests; `file` magic/list/decompression modes; jq test/program/module files; `ffprobe` protocols and reports; time-setting `date`; strict non-display-only `sed`; effectful Git flags/subcommands and patch-producing Git views unless external diff and textconv helpers are explicitly disabled; filesystem writers and non-temporary output redirects; risky environment assignments; directory/process dispatchers; nested shell/interpreter scripts; and browser-opening GitHub flags. Protected commands that are unresolved or resolve through shell `PATH` semantics to an untrusted executable also require review. `xcrun` dispatch is trusted only when the selected tool resolves inside the active Xcode developer tree. The guard then normalizes the canonical target and Swift/Clang aliases before applying tool-family checks: host interpreters and process launchers, effectful Git, shell execution, compiler response/config/CAS/plugin/helper loading, Xcode external configuration/build-helper or risky environment overrides, and system/PATH fallback retain their own guards.
+**Mandatory review** — write/execute/indirect-input options such as ripgrep helpers, archive decompression and symlink following; `sort` output/temp/list inputs; checksum manifests; `file` magic/list/decompression modes; jq test/program/module files; `ffprobe` protocols and reports; time-setting `date`; strict non-display-only `sed`; effectful Git flags/subcommands and patch-producing Git views unless external diff and textconv helpers are explicitly disabled; filesystem writers and non-temporary output redirects; risky environment assignments; directory/process dispatchers; nested shell/interpreter scripts; and browser-opening GitHub flags. Protected commands that are unresolved, or whose same-name executable resolves through shell `PATH` semantics outside trusted roots, require review. `xcrun` dispatch is trusted only when the selected tool resolves inside the active Xcode developer tree. The guard then normalizes the canonical target and Swift/Clang aliases before applying tool-family checks: host interpreters and process launchers, effectful Git, shell execution, compiler response/config/CAS/plugin/helper loading, Xcode external configuration/build-helper or risky environment overrides, and system/PATH fallback retain their own guards.
 
 **Built-in review** — normal `git push`, package publishing, and container registry writes.
 

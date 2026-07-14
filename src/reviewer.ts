@@ -121,21 +121,33 @@ export const reviewWithAiSdk = async (
       },
     } as const;
 
-    const result = await generateText({
-      model: provider.chatModel(policy.review.model),
-      prompt: buildReviewPrompt(context, evaluation, transcript, policy.review.prompt),
-      tools: readOnlyTools,
-      stopWhen: isStepCount(policy.review.maxToolCalls > 0 ? policy.review.maxToolCalls + 1 : 1),
-      temperature: 0,
-      maxOutputTokens: 1000,
-      maxRetries: policy.review.maxRetries,
-      abortSignal: AbortSignal.timeout(policy.review.timeoutMs),
-    });
+    const prompt = buildReviewPrompt(context, evaluation, transcript, policy.review.prompt);
+    const formatAttempts = policy.review.maxRetries === 0 ? 1 : 2;
+    let parseFailure: Error | undefined;
+    for (let attempt = 0; attempt < formatAttempts; attempt += 1) {
+      const result = await generateText({
+        model: provider.chatModel(policy.review.model),
+        prompt: attempt === 0
+          ? prompt
+          : `${prompt}\n\nThe prior response was invalid. Return one complete JSON object matching the schema.`,
+        tools: readOnlyTools,
+        stopWhen: isStepCount(policy.review.maxToolCalls > 0 ? policy.review.maxToolCalls + 1 : 1),
+        temperature: 0,
+        maxOutputTokens: 1000,
+        maxRetries: policy.review.maxRetries,
+        abortSignal: AbortSignal.timeout(policy.review.timeoutMs),
+      });
 
-    // Parse JSON manually — some OpenAI-compatible endpoints (e.g. Ollama Cloud)
-    // wrap JSON responses in markdown code fences despite response_format=json_object.
-    const jsonText = extractJsonFromText(result.text);
-    return reviewResponseFromOutput(JSON.parse(jsonText));
+      try {
+        // Parse JSON manually because compatible endpoints may wrap JSON in markdown fences.
+        const jsonText = extractJsonFromText(result.text);
+        return reviewResponseFromOutput(JSON.parse(jsonText));
+      } catch (error) {
+        if (!(error instanceof SyntaxError) && !(error instanceof z.ZodError)) throw error;
+        parseFailure = error;
+      }
+    }
+    return failClosedReview(`reviewer failed: ${parseFailure?.message ?? "invalid structured output"}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : "unknown reviewer failure";
     return failClosedReview(`reviewer failed: ${message}`);

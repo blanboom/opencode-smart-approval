@@ -1,7 +1,9 @@
-import { describe, expect, mock, test } from "bun:test";
+import { beforeEach, describe, expect, mock, test } from "bun:test";
 import type { CommandContext, ResolvedPolicy, RuleEvaluation } from "../src/types";
 
 let lastGenerateOptions: unknown;
+let generatedTexts: string[] = [];
+let generateCallCount = 0;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
   return typeof value === "object" && value !== null;
@@ -16,8 +18,9 @@ mock.module("@ai-sdk/openai-compatible", () => ({
 mock.module("ai", () => ({
   generateText: mock(async (options: unknown) => {
     lastGenerateOptions = options;
+    generateCallCount += 1;
     return {
-      text: JSON.stringify({
+      text: generatedTexts.shift() ?? JSON.stringify({
         outcome: "allow",
         risk_level: "low",
         user_authorization: "high",
@@ -67,6 +70,12 @@ const evaluation: RuleEvaluation = {
 };
 
 describe("AI SDK reviewer", () => {
+  beforeEach(() => {
+    generatedTexts = [];
+    generateCallCount = 0;
+    lastGenerateOptions = undefined;
+  });
+
   test("passes configured retry count to generateText", async () => {
     const { reviewWithAiSdk } = await import("../src/reviewer");
     const response = await reviewWithAiSdk(policy(5), context, evaluation, "");
@@ -75,5 +84,36 @@ describe("AI SDK reviewer", () => {
     expect(isRecord(lastGenerateOptions)).toBe(true);
     if (!isRecord(lastGenerateOptions)) throw new TypeError("generateText options were not captured");
     expect(lastGenerateOptions["maxRetries"]).toBe(5);
+  });
+
+  test("retries once when the reviewer returns malformed JSON", async () => {
+    generatedTexts = [
+      '{"outcome":"allow"',
+      JSON.stringify({
+        outcome: "deny",
+        risk_level: "high",
+        user_authorization: "unknown",
+        categories: [{ id: "security.retry", score: 1 }],
+        reasons: ["retry produced a complete decision"],
+      }),
+    ];
+    const { reviewWithAiSdk } = await import("../src/reviewer");
+
+    const response = await reviewWithAiSdk(policy(5), context, evaluation, "");
+
+    expect(response.outcome).toBe("deny");
+    expect(response.reasons).toEqual(["retry produced a complete decision"]);
+    expect(generateCallCount).toBe(2);
+  });
+
+  test("fails closed without a format retry when retries are disabled", async () => {
+    generatedTexts = ['{"outcome":"allow"'];
+    const { reviewWithAiSdk } = await import("../src/reviewer");
+
+    const response = await reviewWithAiSdk(policy(0), context, evaluation, "");
+
+    expect(response.outcome).toBe("deny");
+    expect(response.reasons[0]).toContain("reviewer failed");
+    expect(generateCallCount).toBe(1);
   });
 });

@@ -1,6 +1,6 @@
 {
   "name": "opencode-smart-approval",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "OpenCode smart command approval plugin with deterministic rules, optional risk scanning, and an AI SDK reviewer.",
   "type": "module",
   "main": "src/index.ts",

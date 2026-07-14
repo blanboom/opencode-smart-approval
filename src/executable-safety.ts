@@ -87,7 +87,10 @@ export const evaluateExecutableGuard = (
   const canonicalTrusted = trustedRoots.some((root) => within(root, executable.canonical));
   const canonicalName = commandBasename({ ...invocation, commandName: executable.canonical });
   const identityTrusted = canonicalName === name || trustedCanonicalAliases.get(name)?.has(canonicalName) === true;
-  if (!candidateTrusted || !canonicalTrusted || !identityTrusted) {
+  if (!identityTrusted) {
+    return guardFinding("block", "executable_identity", "protected command name resolves to a different executable identity");
+  }
+  if (!candidateTrusted || !canonicalTrusted) {
     return guardFinding("review", "executable_identity", "command path or canonical executable identity is not trusted");
   }
   return undefined;

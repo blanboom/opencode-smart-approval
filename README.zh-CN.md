@@ -103,7 +103,7 @@ npm install -g opencode-smart-approval
 | `review.timeout_ms` | `45000` | LLM 审查超时（5000–300000）。 |
 | `review.max_script_bytes` | `20000` | 发送给审查器的脚本最大字节数。 |
 | `review.max_tool_calls` | `3` | 每次审查的只读工具调用上限（0–10，0 禁用工具）。 |
-| `review.max_retries` | `3` | 首次请求后的 LLM API 最大重试次数（0–10 整数，0 禁用重试）。 |
+| `review.max_retries` | `3` | 每次请求的 LLM API 传输重试上限（0–10 整数）。正值还允许在结构化输出畸形后重新发起一次请求；0 同时禁用两类重试。 |
 | `review.context_messages` | `20` | 注入为对话上下文的近期会话消息数（0–100，0 禁用）。 |
 | `review.prompt` | 内置 | 覆盖审查策略文本。详见 [LLM 审查](#llm-审查)。 |
 | `tirith.enabled` | `true` | 启用 Tirith 扫描。 |
@@ -154,6 +154,8 @@ npm install -g opencode-smart-approval
 
 审查器接收：命令、工作目录、工具参数、匹配规则、Tirith 发现、脚本证据、近期对话上下文。返回结构化裁决（`outcome`、`risk_level`、`user_authorization`、`categories`、`reasons`）。
 
+启用重试时，畸形或不符合 schema 的结构化输出会触发一次全新格式修正请求；第二次仍无效，或禁用重试时首次就无效，都会失败封闭。
+
 ### 只读工具
 
 审查器有两个工具用于在决策前验证本地状态：
@@ -177,9 +179,9 @@ npm install -g opencode-smart-approval
 
 ## 内置规则
 
-**强制阻断** — 凭证文件和敏感 glob（大小写折叠、符号链接规范化，并识别 Git 对象路径与隐含文件递归搜索）、密钥展开（包括 jq `env`/`$ENV`）、管道目标子树中任意位置进入 Shell、钥匙串秘密、`sudo`、环境导出（包括会在启动或错误路径打印完整进程环境的 `ipatool` 等 Apple 工具）、破坏性磁盘/文件操作、git hook 绕过、破坏性推送、GitHub token/管理/认证/密钥操作和无人值守嵌套代理。进入守卫前会规范化带引号或转义的命令名，以及 `command`、`exec`、`time`、`env`、`builtin` 和 BusyBox 分发。
+**强制阻断** — 凭证文件和敏感 glob（大小写折叠、符号链接规范化，并识别 Git 对象路径与隐含文件递归搜索）、密钥展开（包括 jq `env`/`$ENV`）、管道目标子树中任意位置进入 Shell、钥匙串秘密、`sudo`、环境导出（包括会在启动或错误路径打印完整进程环境的 `ipatool` 等 Apple 工具）、破坏性磁盘/文件操作、git hook 绕过、破坏性推送、GitHub token/管理/认证/密钥操作、无人值守嵌套代理，以及 PATH 选中的规范化可执行文件身份与受保护命令名不同的情况（显式可信别名除外）。进入守卫前会规范化带引号或转义的命令名，以及 `command`、`exec`、`time`、`env`、`builtin` 和 BusyBox 分发。
 
-**强制审查** — 会写入、执行或间接读取的选项，包括 ripgrep 辅助程序、压缩包解压和符号链接跟随，`sort` 输出/临时目录/列表输入，校验清单，`file` 魔数/列表/解压模式，jq 测试/外部程序/模块，`ffprobe` 协议与报告，设置时间的 `date`，不满足严格只显示语义的 `sed`，会产生副作用的 Git 参数/子命令，以及未显式关闭 external diff 和 textconv helper 的补丁型 Git 查看命令，文件写入和非临时目录输出重定向、高风险环境变量赋值、目录/进程分发器、嵌套 Shell/解释器脚本和打开浏览器的 GitHub 参数。受保护命令若无法解析，或按 Shell `PATH` 语义解析到不可信可执行文件，也需要审查。`xcrun` 只有在目标工具实际解析到当前 Xcode 开发目录内时才继承信任；随后会先规范化目标的真实名称和 Swift/Clang 别名，再按工具族检查。宿主解释器和进程启动器、会产生副作用的 Git、Shell 执行、编译器响应文件/config/CAS/插件/helper 加载、Xcode 外部配置/构建 helper/高风险环境覆盖，以及系统/PATH 回退工具仍受各自守卫约束。
+**强制审查** — 会写入、执行或间接读取的选项，包括 ripgrep 辅助程序、压缩包解压和符号链接跟随，`sort` 输出/临时目录/列表输入，校验清单，`file` 魔数/列表/解压模式，jq 测试/外部程序/模块，`ffprobe` 协议与报告，设置时间的 `date`，不满足严格只显示语义的 `sed`，会产生副作用的 Git 参数/子命令，以及未显式关闭 external diff 和 textconv helper 的补丁型 Git 查看命令，文件写入和非临时目录输出重定向、高风险环境变量赋值、目录/进程分发器、嵌套 Shell/解释器脚本和打开浏览器的 GitHub 参数。受保护命令若无法解析，或同名可执行文件按 Shell `PATH` 语义解析到可信根目录之外，也需要审查。`xcrun` 只有在目标工具实际解析到当前 Xcode 开发目录内时才继承信任；随后会先规范化目标的真实名称和 Swift/Clang 别名，再按工具族检查。宿主解释器和进程启动器、会产生副作用的 Git、Shell 执行、编译器响应文件/config/CAS/插件/helper 加载、Xcode 外部配置/构建 helper/高风险环境覆盖，以及系统/PATH 回退工具仍受各自守卫约束。
 
 **内置审查** — 普通 `git push`、包发布和容器仓库写入。
 
