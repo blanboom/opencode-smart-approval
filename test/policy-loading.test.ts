@@ -38,9 +38,10 @@ describe("policy loading", () => {
     expect(result.configFile).not.toContain('"id"');
     expect(JSON.parse(stripJsonComments(result.configFile))).toMatchObject({
       allow_local_config: false,
+      self_protection: { enabled: true },
       review: { max_retries: 3 },
       tirith: { enabled: true },
-      rules: { allow: expect.any(Array), block: expect.any(Array) },
+      rules: { allow: expect.any(Array), deny: expect.any(Array) },
     });
   });
 

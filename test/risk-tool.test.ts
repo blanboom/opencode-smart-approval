@@ -63,7 +63,7 @@ exit 1
     expect(verdict?.reasons.join("; ")).toContain("Pipe to shell");
   });
 
-  test("risk tool warnings force LLM review even for allow-rule commands", async () => {
+  test("attaches risk tool warnings to the final LLM evaluation", async () => {
     const directory = tempDir();
     const path = writeExecutable(
       directory,
@@ -74,9 +74,9 @@ exit 2
     );
     const scan = await scanWithRiskTool(policyWithRiskTool(directory, { path }), commandContext(directory, "echo hello"));
     if (scan.action !== "warn") throw new Error("expected warning scan result");
-    const evaluation = await evaluateRules(defaultPolicy().rules, { command: "echo hello" });
+    const evaluation = await evaluateRules([], { command: "unknown-command" });
     const merged = evaluationWithRiskToolScan(evaluation, scan);
-    expect(evaluation.decision).toBe("allow");
+    expect(evaluation.decision).toBe("review");
     expect(merged.decision).toBe("review");
     expect(merged.reasons.join("; ")).toContain("warning by fake");
   });

@@ -4,25 +4,25 @@
 
 [OpenCode](https://github.com/sst/opencode) 的 Shell 命令智能审批插件。通过 [Tirith](https://github.com/sheeki03/tirith)、Tree-sitter Shell 分析、确定性规则和带只读工具的 LLM 审查，在不降低安全性的前提下减少审批成本。
 
-OpenCode 不提供命令沙盒，因此默认放行只覆盖在用户完整主机权限下仍可证明安全的命令和参数。
+OpenCode 不提供命令沙盒。本插件把个人信任决策留给显式用户规则，只提供极小的通用内置快速路径，并在上下文 LLM 审查前交由 Tirith 判断风险。
 
 ## 工作原理
 
 每条 shell 命令（`bash`、`shell`、`exec_command` 等）经过以下管线：
 
 ```
-原始命令 → Tirith → Shell 解析 → 强制守卫 → 逐段规则 → 全局聚合 → 必要时 LLM 审查
+配置自我保护 → 用户规则 → 内置规则 → Tirith → LLM
 ```
 
 | 阶段 | 行为 |
 |------|------|
-| **Tirith** | 首先扫描完整、未拆分的原始命令。阻断为最终结果，警告强制进入 LLM 审查。 |
-| **Shell 分析** | 使用固定版本的 Tree-sitter Bash 语法提取静态可执行段。引号内容是数据；管道、列表、替换、重定向和后台任务是语法。 |
-| **强制守卫** | 不可被覆盖地保护凭证、管道进 Shell、提权、破坏性操作、hook 绕过和可产生副作用的参数。 |
-| **规则** | 用户规则与内置规则在每个可执行段上共同决策，再对完整命令聚合。 |
-| **LLM 审查** | 任一命令段或语法问题需要判断时仅调用一次，并携带完整命令、只读文件工具和对话上下文。失败封闭。 |
+| **配置自我保护** | 在常规审批前，拒绝 Shell 写入以及 OpenCode `Write`/`Edit`/`apply_patch` 对当前全局或项目策略文件的编辑。默认开启，可配置关闭。 |
+| **用户规则** | 优先级最高。完整 allow 或 deny 立即终止，不执行任何后续阶段。Tree-sitter 提取静态可执行段，管道一侧不能替另一侧授权。 |
+| **内置规则** | 只为常见低风险命令提供少量 allow/deny 快速路径，不维护平台专属风险目录。 |
+| **Tirith** | 确定性规则未决时扫描完整、未拆分的原始命令。block 为最终结果；allow/warn 继续交给 LLM，warn 会作为证据附带。 |
+| **LLM 审查** | 最终上下文判断，使用完整命令、扫描结果、只读文件工具和对话上下文。失败封闭。 |
 
-同一命令段内先取最高整数 `priority`，同优先级再按 **block > review > allow** 决策。不同命令段之间也按 **block > review > allow** 聚合；管道或列表一侧的 allow 永远不能替另一侧授权。规则优先级不能覆盖强制守卫和 Tirith。
+用户规则阶段中，同一命令段先取最高整数 `priority`，同优先级按 **deny > review > allow** 决策；不同命令段也按同样顺序聚合。管道或列表只有每个静态可执行段都被允许时才短路。任一段命中用户 deny 会拒绝整条命令；部分 allow、未匹配或显式 review 会继续进入 Tirith 和 LLM。
 
 ## 前置条件：bash 权限放行
 
@@ -56,6 +56,7 @@ npm install -g opencode-smart-approval
 {
   "version": 2,
   "allow_local_config": false,
+  "self_protection": { "enabled": true },
   "review": {
     "base_url": "https://api.openai.com/v1",
     "api_key": "sk-...",
@@ -73,7 +74,7 @@ npm install -g opencode-smart-approval
     "fail_open": false
   },
   "rules": {
-    "block": [],
+    "deny": [],
     "review": [
       { "match": "^deploy(?:\\s|$).*", "scope": "segment", "priority": 50 }
     ],
@@ -97,6 +98,7 @@ npm install -g opencode-smart-approval
 |------|--------|------|
 | `version` | `2` | 用于生成策略迁移的配置格式标记；只接受版本 1 和 2。 |
 | `allow_local_config` | `false` | 允许项目本地配置完整替代全局策略。只从可信全局文件读取。 |
+| `self_protection.enabled` | `true` | 拒绝 Shell 和 OpenCode 文件工具编辑当前审批配置。动态 Shell 输出路径因无法证明目标安全而失败封闭；可在可信策略中设为 `false` 关闭。 |
 | `review.base_url` | — | OpenAI 兼容端点 URL。**必填。** |
 | `review.api_key` | — | API 密钥。**必填。** |
 | `review.model` | — | 模型名。**必填。** |
@@ -110,9 +112,10 @@ npm install -g opencode-smart-approval
 | `tirith.path` | 自动 | 本地二进制路径。跳过自动下载。 |
 | `tirith.timeout_ms` | `5000` | 每条命令的扫描超时。 |
 | `tirith.fail_open` | `false` | `true` = 扫描失败时放行。 |
-| `rules.block` | `[]` | 添加可配置阻断规则。强制守卫独立存在且始终生效。 |
-| `rules.review` | `[]` | 添加强制 LLM 审查规则。 |
-| `rules.allow` | `[]` | 为已证明安全的命令段跳过 LLM 审查。内置规则仍自动生效。 |
+| `rules.deny` | `[]` | 用户拒绝规则，在内置规则、Tirith 和 LLM 前终止。 |
+| `rules.block` | `[]` | `rules.deny` 的旧版兼容别名。 |
+| `rules.review` | `[]` | 需要扫描器和最终 LLM 判断的用户规则。 |
+| `rules.allow` | `[]` | 用户放行规则；完整匹配会跳过内置规则、Tirith 和 LLM。 |
 
 ## 规则
 
@@ -123,7 +126,7 @@ npm install -g opencode-smart-approval
 未知的未来配置版本会直接拒绝加载，不会按旧版本语义猜测解释。
 
 ```jsonc
-"block": [
+"deny": [
   // 旧简洁写法：整条命令、优先级 0
   "^(?:printenv|set)(?:\\s|$).*",
 
@@ -140,15 +143,15 @@ npm install -g opencode-smart-approval
 
 **各类型适用场景：**
 
-- **block** — 绝不允许执行的命令。立即拒绝，无 LLM 成本。
-- **review** — 需要上下文判断的命令（如 `git push`、`npm publish`）。强制 LLM 审查，附带完整对话上下文和只读工具。
-- **allow** — 按模式安全的命令。跳过 LLM 审查（除非 Tirith 警告）。
+- **deny** — 绝不允许执行的命令。立即拒绝，不产生扫描器或 LLM 成本；`block` 保留为兼容别名。
+- **review** — 需要上下文判断的命令，会继续经过 Tirith 和 LLM。
+- **allow** — 按模式显式信任的命令；完整匹配会跳过所有后续阶段。
 
 `scope: "segment"` 匹配解析后的精确可执行段，因此 `my-reader | grep value` 只有在两段都放行时才能整体放行。整命令作用域的 allow 仅在命令只有一个静态可执行节点时生效；整命令 block/review 仍可升级复合命令。
 
-分段规则匹配前会规范化静态可执行文件的引号、转义及拼接写法。强制守卫同时使用解析后的选项和参数值，并保留原始拼写用于检查可能发生的展开。命令前缀环境变量赋值、文件描述符复制、`/dev/null`、边界内的输入重定向，以及写入规范化系统临时目录的输出重定向可以继续静态分析；敏感重定向目标会阻断，输出到其他位置则审查。管道、逻辑/分组命令和纯重定向语句中的重定向都会统一收集。会改变可执行文件查找、加载器、Git/GitHub 辅助程序或工具配置的赋值仍需审查；独立赋值会改变后续 Shell 状态，因此也需审查。含义不明确的 word、动态命令名、命令替换、heredoc、后台任务、不支持的控制结构、畸形输入以及资源上限超限都会只触发一次审查。解析器、运行时或资产初始化失败会直接失败封闭阻断。
+分段规则匹配前会规范化静态可执行文件的引号、转义及拼接写法。引号内容保持为字面数据；管道和列表会拆成可执行段；静态嵌套 Shell 会递归分析。重定向、命令替换、后台执行、不支持的控制结构、畸形输入和资源上限超限都会阻止内置 allow 短路。解析器、运行时或资产初始化失败会直接失败封闭阻断。
 
-即使静态嵌套 Shell 的内部命令都能完整恢复，外层仍会进入审查。Shell 启动文件和环境中的解释器状态不在命令 AST 内；OpenCode 又没有沙盒，因此不能可靠地自动放行 `sh -c`/`bash -c`。
+用户规则对完整静态命令保持最高优先级。对于管道和列表，只有每个可执行兄弟段都被用户显式允许时才会跳过后续阶段。
 
 ## LLM 审查
 
@@ -179,21 +182,16 @@ npm install -g opencode-smart-approval
 
 ## 内置规则
 
-**强制阻断** — 凭证文件和敏感 glob（大小写折叠、符号链接规范化，并识别 Git 对象路径与隐含文件递归搜索）、密钥展开（包括 jq `env`/`$ENV`）、管道目标子树中任意位置进入 Shell、钥匙串秘密、`sudo`、环境导出（包括会在启动或错误路径打印完整进程环境的 `ipatool` 等 Apple 工具）、破坏性磁盘/文件操作、git hook 绕过、破坏性推送、GitHub token/管理/认证/密钥操作、无人值守嵌套代理，以及 PATH 选中的规范化可执行文件身份与受保护命令名不同的情况（显式可信别名除外）。进入守卫前会规范化带引号或转义的命令名，以及 `command`、`exec`、`time`、`env`、`builtin` 和 BusyBox 分发。
+内置规则刻意保持精简且与平台无关：
 
-**强制审查** — 会写入、执行或间接读取的选项，包括 ripgrep 辅助程序、压缩包解压和符号链接跟随，`sort` 输出/临时目录/列表输入，校验清单，`file` 魔数/列表/解压模式，jq 测试/外部程序/模块，`ffprobe` 协议与报告，设置时间的 `date`，不满足严格只显示语义的 `sed`，会产生副作用的 Git 参数/子命令，以及未显式关闭 external diff 和 textconv helper 的补丁型 Git 查看命令，文件写入和非临时目录输出重定向、高风险环境变量赋值、目录/进程分发器、嵌套 Shell/解释器脚本和打开浏览器的 GitHub 参数。受保护命令若无法解析，或同名可执行文件按 Shell `PATH` 语义解析到可信根目录之外，也需要审查。`xcrun` 只有在目标工具实际解析到当前 Xcode 开发目录内时才继承信任；随后会先规范化目标的真实名称和 Swift/Clang 别名，再按工具族检查。宿主解释器和进程启动器、会产生副作用的 Git、Shell 执行、编译器响应文件/config/CAS/插件/helper 加载、Xcode 外部配置/构建 helper/高风险环境覆盖，以及系统/PATH 回退工具仍受各自守卫约束。
+- **Allow：** 基本 Shell 胶水命令（`echo`、`printf`、`true`、`false`、`test`）、基本位置/目录查看（`ls`、`pwd`、`basename`、`dirname`）和 `command -v`。
+- **Deny：** 当前为空。风险分类交给 Tirith，不在正则目录中重复实现。
 
-**内置审查** — 普通 `git push`、包发布和容器仓库写入。
-
-**内置放行** — 静态过滤与检查命令（`grep`、`rg`、`jq`、`sort`、`cat`、严格只显示的 `sed -n` 等）、Shell 胶水命令（包括外部或裸 `printf`，但排除设置变量的 `-v`）、文件系统/主机检查、有限的只读 Git/GitHub 命令和部分 macOS 诊断命令。安全的 Git 全局选项可以放在只读子命令前。文件读取器的操作数、辅助输入、活动 glob 和 tilde 展开会按命令语义解析，并且必须留在当前工作目录或系统临时目录内；逃逸的符号链接和外部路径需要审查。ripgrep 的目录操作数会在放行前进行有上限的递归扫描：普通搜索检查可见后代，`--hidden`/unrestricted 形式还会检查隐藏后代。
-
-由于 OpenCode 没有沙盒，项目代码执行（包脚本、测试、构建、解释器）、文件系统写入和 iOS 开发工具不会被通用默认规则放行。应将明确可信的项目或用户专属命令写成显式 segment 规则；它们只能覆盖同一命令段的普通策略，不能覆盖强制守卫或其他命令段的决策。
-
-因此用户可以把 `xcodebuild`、`xcodebuildmcp`、`sim-use`、`asc`、`xcrun` 等 iOS CLI 整体加入自己的规则。普通 Apple SDK 选择、默认 Xcode toolchain、解析到所选 Xcode 开发目录内的工具、已知 Swift Package 子命令、Swift 的非执行查询/typecheck 模式，以及设备侧 `simctl`/`devicectl` 可以使用用户放行规则；自定义 SDK/toolchain 或 `SDKROOT`/`TOOLCHAINS`、Swift 脚本/REPL/动态插件命令、编译器响应文件/config/CAS/插件 helper、App Intents 元数据工具链覆盖、`xctrace --launch`、宿主侧启动器和解释器、Xcode xcconfig 或编译器/链接器/环境覆盖（包括含 helper 的 `OTHER_*FLAGS`）、会产生副作用的 Git、不安全环境变量，以及解析到所选开发目录外的工具仍会审查或阻断。
+内置 allow 不覆盖输出重定向，复合命令仍要求每个可执行段都匹配。`git push`、包发布、项目构建、解释器、文件写入及平台专属开发工具默认保持未匹配，并进入 Tirith 和 LLM；用户可为可信命令添加显式规则。
 
 ## Tirith
 
-[Tirith](https://github.com/sheeki03/tirith) 是用 Rust 编写的终端安全扫描器。它捕捉正则无法覆盖的威胁：西里尔字母同形字 URL、ANSI 转义注入、base64 解码执行链、通过 `curl` 上传的凭证外泄、管道脚本中的混淆载荷、不可见 Unicode 隐写。对干净输入的开销在亚毫秒级。
+[Tirith](https://github.com/sheeki03/tirith) 是用 Rust 编写的终端安全扫描器，负责捕获精简内置规则不应重复覆盖的风险：西里尔字母同形字 URL、ANSI 转义注入、base64 解码执行链、通过 `curl` 上传的凭证外泄、管道脚本中的混淆载荷和不可见 Unicode 隐写。
 
 ### 自动下载
 
@@ -228,7 +226,7 @@ bun test
 - [OpenAI Codex CLI](https://github.com/openai/codex) — OpenAI 的终端编码 Agent。其沙箱自动审批模型启发了本插件的失败封闭默认值、只读工具设计，以及基于对话上下文的证据驱动审批。
 - [Dyad](https://github.com/dyad-sh/dyad) — 本地开源 AI 应用构建器。其权限钩子和策略配置模式影响了本插件的 JSONC 配置设计以及确定性规则与上下文审查的分离。
 - [Hermes Agent](https://github.com/NousResearch/hermes-agent) — Nous Research 的自我改进 AI Agent。其内置 Tirith 集成（自动安装、checksum 校验、断路器 fail-open 逻辑）直接启发了本插件的 Tirith 自动下载和失败封闭行为。
-- [Tirith](https://github.com/sheeki03/tirith) — 本管线第一级使用的终端安全扫描器。在命令执行前拦截同形字 URL、管道注入、ANSI 注入、混淆载荷、凭证外泄和恶意 AI 技能文件。
+- [Tirith](https://github.com/sheeki03/tirith) — 在用户规则和内置规则未决后运行的终端安全扫描器，在命令执行前拦截同形字 URL、管道注入、ANSI 注入、混淆载荷、凭证外泄和恶意 AI 技能文件。
 
 ## 许可
 

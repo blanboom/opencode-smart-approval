@@ -45,6 +45,10 @@ export type RiskToolConfig = {
   readonly failOpen: boolean;
 };
 
+export type SelfProtectionConfig = {
+  readonly enabled: boolean;
+};
+
 export type RuntimePlatform = {
   readonly platform: NodeJS.Platform;
   readonly arch: string;
@@ -69,6 +73,7 @@ export type TirithDownloadClient = {
 export type ApprovalPolicy = {
   readonly review: ReviewConfig;
   readonly riskTool: RiskToolConfig;
+  readonly selfProtection: SelfProtectionConfig;
   readonly rules: readonly CommandRule[];
 };
 

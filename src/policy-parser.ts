@@ -2,6 +2,7 @@ import {
   DEFAULT_REVIEW_CONNECTION,
   DEFAULT_REVIEW_MAX_RETRIES,
   DEFAULT_RISK_TOOL,
+  DEFAULT_SELF_PROTECTION,
 } from "./default-config";
 import { DEFAULT_REVIEWER_POLICY } from "./prompt";
 import { isLegacyGeneratedRule } from "./legacy-generated-rules";
@@ -13,6 +14,7 @@ import type {
   RiskToolConfig,
   RuleDecision,
   RuleScope,
+  SelfProtectionConfig,
 } from "./types";
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
@@ -103,8 +105,13 @@ const isValidUrl = (value: string): boolean => {
   }
 };
 
-const ruleFromUnknown = (value: unknown, decision: RuleDecision, index: number): CommandRule => {
-  const label = `${decision}[${String(index)}]`;
+const ruleFromUnknown = (
+  value: unknown,
+  decision: RuleDecision,
+  index: number,
+  field: string = decision,
+): CommandRule => {
+  const label = `${field}[${String(index)}]`;
   if (typeof value === "string" && value.length > 0) {
     return compileRule({ label, match: value, decision, origin: "user" });
   }
@@ -137,12 +144,13 @@ const ruleListFromUnknown = (
   value: unknown,
   decision: RuleDecision,
   retireLegacyGenerated: boolean,
+  field: string = decision,
 ): readonly CommandRule[] => {
   if (value === undefined) return [];
-  if (!Array.isArray(value)) throw new Error(`policy.rules.${decision} must be an array`);
+  if (!Array.isArray(value)) throw new Error(`policy.rules.${field} must be an array`);
   return value
     .filter((rule) => !(retireLegacyGenerated && typeof rule === "string" && isLegacyGeneratedRule(decision, rule)))
-    .map((rule, index) => ruleFromUnknown(rule, decision, index));
+    .map((rule, index) => ruleFromUnknown(rule, decision, index, field));
 };
 
 const mergeRules = (
@@ -163,6 +171,7 @@ const mergeRules = (
 const rulesFromUnknown = (value: unknown, retireLegacyGenerated: boolean): readonly CommandRule[] => {
   if (!isRecord(value)) return [];
   const userRules = [
+    ...ruleListFromUnknown(value["deny"], "block", retireLegacyGenerated, "deny"),
     ...ruleListFromUnknown(value["block"], "block", retireLegacyGenerated),
     ...ruleListFromUnknown(value["review"], "review", retireLegacyGenerated),
     ...ruleListFromUnknown(value["allow"], "allow", retireLegacyGenerated),
@@ -228,6 +237,14 @@ const riskToolFromUnknown = (value: unknown): RiskToolConfig => {
   return { enabled, timeoutMs, failOpen, ...(path ? { path } : {}) };
 };
 
+const selfProtectionFromUnknown = (value: unknown): SelfProtectionConfig => {
+  if (!isRecord(value)) return DEFAULT_SELF_PROTECTION;
+  const enabled = value["enabled"];
+  if (enabled === undefined) return DEFAULT_SELF_PROTECTION;
+  if (typeof enabled !== "boolean") throw new Error("self_protection.enabled must be a boolean");
+  return { enabled };
+};
+
 export const policyFromUnknown = (value: unknown, fallbackRules: readonly CommandRule[]): ApprovalPolicy => {
   if (!isRecord(value)) throw new Error("policy must be a JSON object");
   const rawVersion = value["version"];
@@ -238,6 +255,7 @@ export const policyFromUnknown = (value: unknown, fallbackRules: readonly Comman
   return {
     review: reviewFromUnknown(value["review"]),
     riskTool: riskToolFromUnknown(value["tirith"] ?? value["risk_tool"]),
+    selfProtection: selfProtectionFromUnknown(value["self_protection"]),
     rules: mergeRules(rulesFromUnknown(value["rules"], retireLegacyGenerated), fallbackRules),
   };
 };

@@ -37,9 +37,9 @@ const staticPrefix = (path: string): string => {
 
 const credentialNames = new Set([
   ".env", ".env.local", ".git", ".git-credentials", ".netrc", ".npmrc", ".pypirc", ".ssh",
-  ".aws", ".docker", ".kube", ".azure", "auth.json", "command-approval.json", "command-approval.jsonc",
+  ".aws", ".docker", ".kube", ".azure", "auth.json",
 ]);
-const credentialConfigNames = new Set(["gcloud", "gh", "opencode"]);
+const credentialConfigNames = new Set(["gcloud", "gh"]);
 const searchCommands = new Set(["egrep", "fgrep", "grep", "rg"]);
 
 export const isSensitivePathValue = (value: string, gitSyntax = false): boolean => {

@@ -1,119 +1,37 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
-import type { CommandContext, ResolvedPolicy, RuleEvaluation } from "../src/types";
+import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 
-let lastGenerateOptions: unknown;
-let generatedTexts: string[] = [];
-let generateCallCount = 0;
-
-const isRecord = (value: unknown): value is Record<string, unknown> => {
-  return typeof value === "object" && value !== null;
-};
-
-mock.module("@ai-sdk/openai-compatible", () => ({
-  createOpenAICompatible: () => ({
-    chatModel: (model: string) => ({ model }),
-  }),
-}));
-
-mock.module("ai", () => ({
-  generateText: mock(async (options: unknown) => {
-    lastGenerateOptions = options;
-    generateCallCount += 1;
-    return {
-      text: generatedTexts.shift() ?? JSON.stringify({
-        outcome: "allow",
-        risk_level: "low",
-        user_authorization: "high",
-        categories: [{ id: "security.test", score: 0 }],
-        reasons: ["test approval"],
-      }),
-    };
-  }),
-  isStepCount: (count: number) => ({ count }),
-  zodSchema: (schema: unknown) => schema,
-}));
-
-const policy = (maxRetries: number): ResolvedPolicy => ({
-  review: {
-    baseURL: "https://example.com/v1",
-    apiKey: "test-key",
-    model: "test-model",
-    timeoutMs: 45_000,
-    maxScriptBytes: 20_000,
-    maxToolCalls: 0,
-    maxRetries,
-    contextMessages: 0,
-    prompt: "Return JSON.",
-  },
-  riskTool: {
-    enabled: false,
-    timeoutMs: 5_000,
-    failOpen: true,
-  },
-  rules: [],
-});
-
-const context: CommandContext = {
-  sessionID: "session-test",
-  tool: "bash",
-  command: "git push",
-  cwd: process.cwd(),
-  args: {},
-  scriptEvidence: [],
-};
-
-const evaluation: RuleEvaluation = {
-  decision: "review",
-  matchedRules: [],
-  categories: [],
-  reasons: [],
+type ReviewerDriverResult = {
+  readonly configuredRetryCount: number;
+  readonly malformedCallCount: number;
+  readonly malformedOutcome: string;
+  readonly malformedReasons: readonly string[];
+  readonly noRetryCallCount: number;
+  readonly noRetryOutcome: string;
+  readonly noRetryReasons: readonly string[];
 };
 
 describe("AI SDK reviewer", () => {
-  beforeEach(() => {
-    generatedTexts = [];
-    generateCallCount = 0;
-    lastGenerateOptions = undefined;
-  });
+  test("passes retry configuration and handles malformed output without leaking module mocks", async () => {
+    const child = Bun.spawn([process.execPath, join(import.meta.dir, "fixtures", "reviewer-driver.ts")], {
+      cwd: join(import.meta.dir, ".."),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    const result = JSON.parse(stdout) as ReviewerDriverResult;
 
-  test("passes configured retry count to generateText", async () => {
-    const { reviewWithAiSdk } = await import("../src/reviewer");
-    const response = await reviewWithAiSdk(policy(5), context, evaluation, "");
-
-    expect(response.outcome).toBe("allow");
-    expect(isRecord(lastGenerateOptions)).toBe(true);
-    if (!isRecord(lastGenerateOptions)) throw new TypeError("generateText options were not captured");
-    expect(lastGenerateOptions["maxRetries"]).toBe(5);
-  });
-
-  test("retries once when the reviewer returns malformed JSON", async () => {
-    generatedTexts = [
-      '{"outcome":"allow"',
-      JSON.stringify({
-        outcome: "deny",
-        risk_level: "high",
-        user_authorization: "unknown",
-        categories: [{ id: "security.retry", score: 1 }],
-        reasons: ["retry produced a complete decision"],
-      }),
-    ];
-    const { reviewWithAiSdk } = await import("../src/reviewer");
-
-    const response = await reviewWithAiSdk(policy(5), context, evaluation, "");
-
-    expect(response.outcome).toBe("deny");
-    expect(response.reasons).toEqual(["retry produced a complete decision"]);
-    expect(generateCallCount).toBe(2);
-  });
-
-  test("fails closed without a format retry when retries are disabled", async () => {
-    generatedTexts = ['{"outcome":"allow"'];
-    const { reviewWithAiSdk } = await import("../src/reviewer");
-
-    const response = await reviewWithAiSdk(policy(0), context, evaluation, "");
-
-    expect(response.outcome).toBe("deny");
-    expect(response.reasons[0]).toContain("reviewer failed");
-    expect(generateCallCount).toBe(1);
+    expect(exitCode, stderr).toBe(0);
+    expect(result.configuredRetryCount).toBe(5);
+    expect(result.malformedOutcome).toBe("deny");
+    expect(result.malformedReasons).toEqual(["retry produced a complete decision"]);
+    expect(result.malformedCallCount).toBe(2);
+    expect(result.noRetryOutcome).toBe("deny");
+    expect(result.noRetryReasons[0]).toContain("reviewer failed");
+    expect(result.noRetryCallCount).toBe(1);
   });
 });

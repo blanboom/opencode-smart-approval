@@ -87,7 +87,7 @@ describe("policy trust boundary", () => {
     expect(loaded.policy.review.model).toBe("local-model");
     expect(loaded.policy.riskTool.enabled).toBe(false);
     expect(loaded.policy.riskTool.failOpen).toBe(true);
-    expect(Object.keys(loaded.policy).sort()).toEqual(["review", "riskTool", "rules"]);
+    expect(Object.keys(loaded.policy).sort()).toEqual(["review", "riskTool", "rules", "selfProtection"]);
     expect((await evaluateRules(loaded.policy.rules, { command: "block-local" })).decision).toBe("block");
     expect((await evaluateRules(loaded.policy.rules, { command: "block-global" })).decision).toBe("review");
   });

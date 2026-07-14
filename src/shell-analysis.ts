@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 import type { Node } from "web-tree-sitter";
-import { dispatchedInvocationForGuards, effectiveInvocation } from "./command-invocation";
+import { effectiveInvocation } from "./command-invocation";
 import { withShellTree } from "./shell-parser";
 import {
   byteOffsetsFor,
@@ -119,11 +119,10 @@ const collectCommand = (
   });
 
   for (const reason of invocation.reviewReasons) issue(state, "unsupported", reason);
-  const shellInvocation = dispatchedInvocationForGuards(invocation) ?? invocation;
-  const shellName = basename(shellInvocation.commandName);
+  const shellName = basename(invocation.commandName);
   if (!shellName || !shellNames.has(shellName)) return;
-  const shellArgs = shellInvocation.arguments;
-  const shellNodes = argumentNodes.slice(shellInvocation.argumentOffset);
+  const shellArgs = invocation.arguments;
+  const shellNodes = argumentNodes.slice(invocation.argumentOffset);
   const scriptIndex = shellScriptIndex(shellArgs);
   if (scriptIndex !== undefined && shellNodes[scriptIndex]) {
     if (shellNodes[scriptIndex].type === "raw_string") {

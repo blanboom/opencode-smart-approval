@@ -1,5 +1,4 @@
 import { analyzeShell } from "./shell-analysis";
-import { evaluateMandatoryGuards } from "./mandatory-guards";
 import type {
   CommandContext,
   CommandRule,
@@ -7,6 +6,7 @@ import type {
   MatchedRule,
   RuleCategory,
   RuleEvaluation,
+  ShellAnalysis,
   ShellSegment,
 } from "./types";
 
@@ -54,6 +54,12 @@ const resolveMatches = (matches: readonly MatchedRule[]): ResolvedMatches => {
   };
 };
 
+const eligibleForSegment = (matches: readonly MatchedRule[], segment: ShellSegment): readonly MatchedRule[] => {
+  const hasOutputRedirection = segment.redirections.some((redirection) => !redirection.operator.startsWith("<"));
+  if (!hasOutputRedirection) return matches;
+  return matches.filter((rule) => rule.origin !== "builtin" || rule.decision !== "allow");
+};
+
 const strongest = (decisions: readonly EvaluationDecision[]): EvaluationDecision => {
   return decisions.reduce<EvaluationDecision>((current, decision) =>
     decisionPriority(decision) > decisionPriority(current) ? decision : current,
@@ -70,15 +76,14 @@ const unique = <T>(values: readonly T[], key: (value: T) => string): readonly T[
   });
 };
 
-export const evaluateRules = async (
+export const evaluateRulesFromAnalysis = (
   rules: readonly CommandRule[],
-  context: Pick<CommandContext, "command"> & Partial<Pick<CommandContext, "cwd">>,
-): Promise<RuleEvaluation> => {
-  const analysis = await analyzeShell(context.command);
-  const guardFindings = evaluateMandatoryGuards(analysis, context.cwd ?? process.cwd());
+  command: string,
+  analysis: ShellAnalysis,
+): RuleEvaluation => {
   const commandMatches = rules.flatMap((rule, index) => {
     if (rule.scope !== "command") return [];
-    const matched = matchRule(rule, context.command, index);
+    const matched = matchRule(rule, command, index);
     return matched ? [matched] : [];
   });
   const nodeResults: ResolvedMatches[] = [];
@@ -91,7 +96,7 @@ export const evaluateRules = async (
         const matched = matchRule(rule, segment.normalizedSource, index, segment);
         return matched ? [matched] : [];
       });
-      nodeResults.push(resolveMatches([...commandMatches, ...segmentMatches]));
+      nodeResults.push(resolveMatches(eligibleForSegment([...commandMatches, ...segmentMatches], segment)));
     }
   } else {
     const commandEscalations = commandMatches.filter((rule) => rule.decision !== "allow");
@@ -102,13 +107,12 @@ export const evaluateRules = async (
         const matched = matchRule(rule, segment.normalizedSource, index, segment);
         return matched ? [matched] : [];
       });
-      nodeResults.push(resolveMatches(matches));
+      nodeResults.push(resolveMatches(eligibleForSegment(matches, segment)));
     }
   }
 
   const issueReasons = analysis.issues.map((entry) => entry.reason);
   const decisions = nodeResults.map((result) => result.decision);
-  decisions.push(...guardFindings.map((entry) => entry.decision));
   if (analysis.segments.length === 0 || issueReasons.length > 0) decisions.push("review");
   const decision = strongest(decisions.length > 0 ? decisions : ["review"]);
   const matchedRules = unique(
@@ -117,7 +121,6 @@ export const evaluateRules = async (
   );
   const reasons = unique(
     [
-      ...guardFindings.map((entry) => entry.reason),
       ...matchedRules.map((rule) => rule.reason ?? `matched ${rule.label} command approval rule`),
       ...issueReasons,
     ],
@@ -126,10 +129,17 @@ export const evaluateRules = async (
   const categories = unique(
     [
       ...matchedRules.map(categoryForRule),
-      ...guardFindings.map((entry) => entry.category),
       ...(issueReasons.length > 0 ? [{ id: "policy.review.shell_analysis", score: 0.5 }] : []),
     ],
     (category) => category.id,
   );
   return { decision, matchedRules, categories, reasons };
+};
+
+export const evaluateRules = async (
+  rules: readonly CommandRule[],
+  context: Pick<CommandContext, "command">,
+): Promise<RuleEvaluation> => {
+  const analysis = await analyzeShell(context.command);
+  return evaluateRulesFromAnalysis(rules, context.command, analysis);
 };

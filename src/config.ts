@@ -22,6 +22,13 @@ const legacyGlobalPolicyPath = (): string => join(globalConfigDir(), LEGACY_POLI
 const localPolicyPath = (directory: string): string => join(directory, POLICY_FILE_NAME);
 const legacyLocalPolicyPath = (directory: string): string => join(directory, LEGACY_POLICY_FILE_NAME);
 
+export const policyCandidatePaths = (directory: string): readonly string[] => [
+  globalPolicyPath(),
+  legacyGlobalPolicyPath(),
+  localPolicyPath(directory),
+  legacyLocalPolicyPath(directory),
+];
+
 
 export type PolicyLoadResult =
   | { readonly ok: true; readonly policy: ResolvedPolicy; readonly path: string; readonly initialized: boolean }

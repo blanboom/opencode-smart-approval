@@ -28,7 +28,7 @@ describe("complex shell command policy", () => {
 
   test("allows static pipelines only when every segment is allowed", async () => {
     const evaluation = await evaluateRules(defaultPolicy().rules, {
-      command: "echo hello | grep hello | head -n 1",
+      command: "echo hello | printf hello",
     });
     expect(evaluation.decision).toBe("allow");
   });

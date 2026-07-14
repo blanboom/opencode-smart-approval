@@ -1,11 +1,9 @@
 import type { Hooks, PluginInput, PluginModule } from "@opencode-ai/plugin";
 import { buildCommandContext } from "./context";
-import { loadOrInitializePolicy } from "./config";
-import { evaluationWithRiskToolScan, scanWithRiskTool, verdictFromRiskToolScan } from "./risk-tool";
-import { evaluateRules } from "./rules";
-import { reviewWithAiSdk } from "./reviewer";
-import { enforceVerdict, verdictFromReview, verdictFromRules } from "./verdict";
-import { fetchSessionContext } from "./session-context";
+import { loadOrInitializePolicy, policyCandidatePaths } from "./config";
+import { findConfigWrite } from "./config-self-protection";
+import { resolveCommandVerdict } from "./decision-pipeline";
+import { CommandApprovalError, enforceVerdict } from "./verdict";
 
 type ToolExecuteBefore = NonNullable<Hooks["tool.execute.before"]>;
 type ToolExecuteInput = Parameters<ToolExecuteBefore>[0];
@@ -13,16 +11,39 @@ type ToolExecuteOutput = Parameters<ToolExecuteBefore>[1];
 export type ApprovalPluginInput = Pick<PluginInput, "directory"> & Partial<Pick<PluginInput, "client">>;
 
 const shellToolNames = new Set(["bash", "shell", "shell_command", "exec_command"]);
+const protectedFileToolNames = new Set(["write", "edit", "apply_patch", "patch"]);
 
 const handlesTool = (tool: string): boolean => {
-  return shellToolNames.has(tool);
+  return shellToolNames.has(tool) || protectedFileToolNames.has(tool);
 };
 
 export const createHook = (directory: string, client?: PluginInput["client"]): ToolExecuteBefore => {
   const loaded = loadOrInitializePolicy(directory);
+  const protectedPolicyPaths = policyCandidatePaths(directory);
   return async (toolInput: ToolExecuteInput, toolOutput: ToolExecuteOutput) => {
     if (!handlesTool(toolInput.tool)) return;
     const policy = loaded.policy;
+    if (policy.selfProtection.enabled) {
+      const finding = await findConfigWrite({
+        tool: toolInput.tool,
+        args: toolOutput.args,
+        directory,
+        policyPaths: protectedPolicyPaths,
+      });
+      if (finding) {
+        enforceVerdict(toolInput.tool, {
+          decision: "block",
+          source: "rule",
+          riskLevel: "critical",
+          userAuthorization: "unknown",
+          categories: [{ id: "security.config_self_protection", score: 1 }],
+          reasons: [finding.reason],
+          matchedRuleLabels: [],
+        });
+        return;
+      }
+    }
+    if (!shellToolNames.has(toolInput.tool)) return;
     if (!loaded.ok) {
       enforceVerdict(toolInput.tool, {
         decision: "block",
@@ -48,16 +69,10 @@ export const createHook = (directory: string, client?: PluginInput["client"]): T
       });
       return;
     }
-    const riskToolScan = await scanWithRiskTool(policy, context);
-    const riskToolVerdict = verdictFromRiskToolScan(riskToolScan);
-    if (riskToolVerdict) {
-      enforceVerdict(toolInput.tool, riskToolVerdict);
-      return;
-    }
-    let evaluation;
     try {
-      evaluation = await evaluateRules(policy.rules, context);
+      enforceVerdict(toolInput.tool, await resolveCommandVerdict({ policy, context, client }));
     } catch (error) {
+      if (error instanceof CommandApprovalError) throw error;
       const message = error instanceof Error ? error.message : "unknown shell analysis failure";
       enforceVerdict(toolInput.tool, {
         decision: "block",
@@ -68,26 +83,7 @@ export const createHook = (directory: string, client?: PluginInput["client"]): T
         reasons: [`shell analysis unavailable: ${message}`],
         matchedRuleLabels: [],
       });
-      return;
     }
-    const ruleVerdict = verdictFromRules(evaluation);
-    // block rules: immediate deny
-    if (evaluation.decision === "block" && ruleVerdict) {
-      enforceVerdict(toolInput.tool, ruleVerdict);
-      return;
-    }
-    // allow rules: immediate pass (unless Tirith warned → review)
-    if (evaluation.decision === "allow" && ruleVerdict && riskToolScan.action !== "warn") {
-      enforceVerdict(toolInput.tool, ruleVerdict);
-      return;
-    }
-    // review rules or unmatched or Tirith warn: send to LLM
-    const reviewEvaluation = evaluationWithRiskToolScan(evaluation, riskToolScan);
-    const transcript = await fetchSessionContext(client, toolInput.sessionID, policy.review.contextMessages);
-    enforceVerdict(
-      toolInput.tool,
-      verdictFromReview(await reviewWithAiSdk(policy, context, reviewEvaluation, transcript), reviewEvaluation),
-    );
   };
 };
 

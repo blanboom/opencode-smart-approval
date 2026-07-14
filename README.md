@@ -4,25 +4,25 @@
 
 A plugin for [OpenCode](https://github.com/sst/opencode) that safely reduces shell-command approval cost with [Tirith](https://github.com/sheeki03/tirith), Tree-sitter shell analysis, deterministic rules, and an LLM reviewer with read-only tools.
 
-OpenCode does not provide a command sandbox. Deterministic allows are therefore deliberately limited to commands and options that are safe with the user's full host permissions.
+OpenCode does not provide a command sandbox. This plugin keeps personal trust decisions explicit, uses only a small generic built-in fast path, and delegates risk detection to Tirith before contextual LLM review.
 
 ## How it works
 
 Every shell command (`bash`, `shell`, `exec_command`, etc.) follows this pipeline:
 
 ```
-Raw command → Tirith → Shell parse → Mandatory guards → Per-segment rules → Aggregate → LLM if needed
+Configuration self-protection → User rules → Built-in rules → Tirith → LLM
 ```
 
 | Stage | Action |
 |-------|--------|
-| **Tirith** | Scans the complete, unsplit raw command first. A block is final; a warning forces LLM review. |
-| **Shell analysis** | A pinned Tree-sitter Bash grammar extracts static executable segments. Quotes are data; pipelines, lists, substitutions, redirects, and background jobs are syntax. |
-| **Mandatory guards** | Unoverrideable protection for credentials, pipe-to-shell, privilege escalation, destructive operations, hook bypasses, and effectful options. |
-| **Rules** | User and built-in rules are evaluated on each executable segment, then aggregated across the complete command. |
-| **LLM review** | Called once when any segment or syntax issue needs judgment. Uses the full command, read-only filesystem tools, and conversation transcript. Fail-closed. |
+| **Configuration self-protection** | Before normal approval, rejects shell writes and OpenCode `Write`/`Edit`/`apply_patch` edits to active global or project policy files. Enabled by default and configurable. |
+| **User rules** | Highest priority. A complete allow or deny is terminal and skips all later stages. Tree-sitter extracts static executable segments so one side of a pipeline cannot authorize another. |
+| **Built-in rules** | A deliberately small allow/deny fast path for common low-risk commands. It contains no platform-specific risk catalog. |
+| **Tirith** | Scans the complete, unsplit raw command when deterministic rules do not decide it. A block is final; allow/warn results continue to the LLM, with warnings attached as evidence. |
+| **LLM review** | Final contextual judgment using the full command, scanner findings, read-only filesystem tools, and conversation transcript. Fail-closed. |
 
-On the same segment, the highest integer `priority` wins; ties use **block > review > allow**. Across segments, the complete command also aggregates as **block > review > allow**. An allow on one side of a pipe or list never authorizes another side. Mandatory guards and Tirith cannot be overridden by rule priority.
+Within the user-rule stage, the highest integer `priority` wins on the same segment; ties use **deny > review > allow**. Across segments, the complete command aggregates with the same order. A pipeline or list short-circuits only when every static executable segment is allowed. A user deny on any segment denies the whole command; a partial allow, unmatched command, or explicit review continues to Tirith and then the LLM.
 
 ## Prerequisite: bash permission
 
@@ -56,6 +56,7 @@ Create the global config (JSONC — comments supported):
 {
   "version": 2,
   "allow_local_config": false,
+  "self_protection": { "enabled": true },
   "review": {
     "base_url": "https://api.openai.com/v1",
     "api_key": "sk-...",
@@ -73,7 +74,7 @@ Create the global config (JSONC — comments supported):
     "fail_open": false
   },
   "rules": {
-    "block": [],
+    "deny": [],
     "review": [
       { "match": "^deploy(?:\\s|$).*", "scope": "segment", "priority": 50 }
     ],
@@ -97,6 +98,7 @@ If the file doesn't exist, the plugin generates a default config on first run. T
 |--------|---------|-------------|
 | `version` | `2` | Config format marker used for generated-policy migration. Only versions 1 and 2 are accepted. |
 | `allow_local_config` | `false` | Allow project-local config to fully replace the global policy. Read only from the trusted global file. |
+| `self_protection.enabled` | `true` | Reject shell and OpenCode file-tool edits to active approval config files. Dynamic shell output paths fail closed because the target cannot be proven safe. Set `false` in the trusted policy to disable. |
 | `review.base_url` | — | OpenAI-compatible endpoint URL. **Required.** |
 | `review.api_key` | — | API key. **Required.** |
 | `review.model` | — | Model name. **Required.** |
@@ -110,9 +112,10 @@ If the file doesn't exist, the plugin generates a default config on first run. T
 | `tirith.path` | auto | Local binary path. Skip auto-download. |
 | `tirith.timeout_ms` | `5000` | Scanner timeout per command. |
 | `tirith.fail_open` | `false` | `true` = allow on scanner failure. |
-| `rules.block` | `[]` | Add configurable deny rules. Mandatory guards are separate and always active. |
-| `rules.review` | `[]` | Add rules that force LLM review. |
-| `rules.allow` | `[]` | Add rules that skip LLM review for a proven segment. Built-ins remain active automatically. |
+| `rules.deny` | `[]` | User deny rules. Terminal before built-ins, Tirith, and the LLM. |
+| `rules.block` | `[]` | Legacy alias for `rules.deny`; retained for existing configs. |
+| `rules.review` | `[]` | User rules that require the scanner and final LLM judgment. |
+| `rules.allow` | `[]` | User allow rules. A complete match is terminal and skips built-ins, Tirith, and the LLM. |
 
 ## Rules
 
@@ -123,7 +126,7 @@ When loading an unversioned or version-1 config, the plugin ignores only the six
 Unknown future config versions are rejected instead of being interpreted with older semantics.
 
 ```jsonc
-"block": [
+"deny": [
   // Legacy compact form: whole command, priority 0
   "^(?:printenv|set)(?:\\s|$).*",
 
@@ -140,15 +143,15 @@ Unknown future config versions are rejected instead of being interpreted with ol
 
 **When to use each type:**
 
-- **block** — commands you never want to run. Immediate denial, no LLM cost.
-- **review** — commands that need contextual judgment (e.g. `git push`, `npm publish`). Forces LLM review with full transcript and read-only tools.
-- **allow** — commands that are safe by pattern. Skips LLM review (unless Tirith warns).
+- **deny** — commands you never want to run. Immediate denial with no scanner or LLM cost. `block` remains a compatibility alias.
+- **review** — commands that need contextual judgment. They continue through Tirith and then the LLM.
+- **allow** — commands you explicitly trust by pattern. A complete match skips every later stage.
 
 `scope: "segment"` matches the exact parsed executable segment, so `my-reader | grep value` can be allowed only when both segments allow. A command-scope allow is eligible only when the command contains exactly one static executable node. Command-scope block/review rules may still escalate a compound command.
 
-Static executable spelling is normalized before segment-rule matching. Mandatory guards also use cooked option and argument values while retaining raw spelling for expansion-sensitive checks. Prefix environment assignments, descriptor duplication, `/dev/null`, bounded input redirects, and output redirects into canonical system-temporary roots remain analyzable; sensitive redirect targets block, while output elsewhere reviews. Redirections are collected across pipelines, logical/grouped commands, and redirect-only statements. Assignments that alter executable lookup, loaders, Git/GitHub helpers, or tool configuration require review, and standalone assignments review because they change later shell state. Ambiguous word forms, dynamic command names, substitutions, heredocs, background jobs, unsupported control constructs, malformed input, and resource-limit breaches are reviewed once. Parser/runtime/asset initialization failure blocks with a fail-closed verdict.
+Static executable spelling is normalized before segment-rule matching. Quotes remain literal data; pipelines and lists are split into executable segments; nested static shell bodies are analyzed recursively. Redirections, substitutions, background execution, unsupported control structures, malformed input, and resource-limit breaches prevent a built-in allow from short-circuiting. Parser/runtime/asset initialization failure blocks fail-closed.
 
-Static nested shell bodies are still reviewed even when their inner commands are fully recoverable. Shell startup files and ambient interpreter state are outside the command AST, so auto-allowing `sh -c`/`bash -c` would not be sound without a sandbox.
+User rules remain authoritative for the complete static command. For pipelines and lists, every executable sibling must be explicitly user-allowed before later stages are skipped.
 
 ## LLM review
 
@@ -179,21 +182,16 @@ When the reviewer denies, `reasons` are passed back to OpenCode as a `CommandApp
 
 ## Built-in rules
 
-**Mandatory block** — credential files and sensitive globs (case-folded, canonicalized through symlinks, and recognized in Git object paths and hidden recursive searches), secret expansion (including jq `env`/`$ENV`), pipe-to-shell anywhere in a pipeline sink subtree, keychain secrets, `sudo`, environment dumps (including Apple tools such as `ipatool` that dump the process environment on startup or error paths), destructive disk/filesystem operations, git hook bypasses, destructive pushes, GitHub token/admin/auth/secret operations, nested unattended agents, and protected command names whose PATH-selected canonical executable has a different identity (except explicit trusted aliases). Quoted/escaped command names plus `command`, `exec`, `time`, `env`, `builtin`, and BusyBox dispatch are normalized before these guards.
+Built-ins are intentionally narrow and platform-neutral:
 
-**Mandatory review** — write/execute/indirect-input options such as ripgrep helpers, archive decompression and symlink following; `sort` output/temp/list inputs; checksum manifests; `file` magic/list/decompression modes; jq test/program/module files; `ffprobe` protocols and reports; time-setting `date`; strict non-display-only `sed`; effectful Git flags/subcommands and patch-producing Git views unless external diff and textconv helpers are explicitly disabled; filesystem writers and non-temporary output redirects; risky environment assignments; directory/process dispatchers; nested shell/interpreter scripts; and browser-opening GitHub flags. Protected commands that are unresolved, or whose same-name executable resolves through shell `PATH` semantics outside trusted roots, require review. `xcrun` dispatch is trusted only when the selected tool resolves inside the active Xcode developer tree. The guard then normalizes the canonical target and Swift/Clang aliases before applying tool-family checks: host interpreters and process launchers, effectful Git, shell execution, compiler response/config/CAS/plugin/helper loading, Xcode external configuration/build-helper or risky environment overrides, and system/PATH fallback retain their own guards.
+- **Allow:** basic shell glue (`echo`, `printf`, `true`, `false`, `test`), basic location/directory inspection (`ls`, `pwd`, `basename`, `dirname`), and `command -v`.
+- **Deny:** currently empty. Risk classification belongs to Tirith rather than a duplicated regex catalog.
 
-**Built-in review** — normal `git push`, package publishing, and container registry writes.
-
-**Built-in allow** — static filters and inspectors (`grep`, `rg`, `jq`, `sort`, `cat`, strict `sed -n` display programs, etc.), shell glue including external or bare `printf` except variable-setting `-v`, filesystem/host inspection, bounded read-only Git/GitHub commands, and selected macOS diagnostics. Safe Git global options may precede a read-only subcommand. File-reader operands, auxiliary inputs, active globs, and tilde expansion are command-aware and must remain inside the current working directory or system temporary directory; symlink escapes and external paths require review. Directory operands to ripgrep are scanned recursively with a fixed bound before an allow decision: normal searches inspect visible descendants, while `--hidden`/unrestricted forms also inspect hidden descendants.
-
-Project code execution (package scripts, tests, builds, interpreters), filesystem writes, and iOS development tools are not generically allowed because OpenCode has no sandbox. Put intentionally trusted project- or user-specific commands in explicit segment rules. Those rules can override ordinary same-segment policy, but never mandatory guards or sibling decisions.
-
-A user may therefore allow iOS CLIs such as `xcodebuild`, `xcodebuildmcp`, `sim-use`, `asc`, or `xcrun` as whole command families. Normal Apple SDK selectors, the default Xcode toolchain, tools resolved inside the selected Xcode developer tree, known Swift Package subcommands, non-executing Swift query/typecheck modes, and device-side `simctl`/`devicectl` can use that allow rule. Custom SDK/toolchain selectors or `SDKROOT`/`TOOLCHAINS`, Swift scripts/REPLs/dynamic plugin commands, compiler response/config/CAS/plugin helpers, App Intents metadata toolchain overrides, `xctrace --launch`, host-side launchers and interpreters, Xcode xcconfig or compiler/linker/environment overrides (including helper-bearing `OTHER_*FLAGS`), effectful Git, unsafe environment changes, and tools resolved outside the selected developer tree still review or block.
+Built-in allows never cover output redirection, and compound commands still require every executable segment to match. Commands such as `git push`, package publishing, project builds, interpreters, filesystem writers, and platform-specific developer tools remain unmatched and proceed to Tirith plus LLM review unless the user adds an explicit rule.
 
 ## Tirith
 
-[Tirith](https://github.com/sheeki03/tirith) is a terminal security scanner in Rust. It catches what regex cannot: Cyrillic homograph URLs, ANSI escape injection, base64 decode-execute chains, credential exfiltration via `curl` uploads, obfuscated piped payloads, invisible Unicode steganography. Sub-millisecond overhead on clean input.
+[Tirith](https://github.com/sheeki03/tirith) is a terminal security scanner in Rust. It catches what a small built-in rule set should not duplicate: Cyrillic homograph URLs, ANSI escape injection, base64 decode-execute chains, credential exfiltration via `curl` uploads, obfuscated piped payloads, and invisible Unicode steganography.
 
 ### Auto-download
 
@@ -228,7 +226,7 @@ bun test
 - [OpenAI Codex CLI](https://github.com/openai/codex) — OpenAI's terminal coding agent. Its sandbox-and-auto-approve model inspired the fail-closed default, read-only tool design, and evidence-based approval with conversation context.
 - [Dyad](https://github.com/dyad-sh/dyad) — a local open-source AI app builder. Its permission hooks and policy configuration patterns informed the JSONC config design and the separation between deterministic rules and contextual review.
 - [Hermes Agent](https://github.com/NousResearch/hermes-agent) — a self-improving AI agent by Nous Research. Its built-in Tirith integration with auto-install, checksum verification, and circuit-breaker fail-open logic directly inspired this plugin's Tirith auto-download and fail-closed behavior.
-- [Tirith](https://github.com/sheeki03/tirith) — the terminal security scanner used as the first stage of this pipeline. Intercepts homograph URLs, pipe-to-shell, ANSI injection, obfuscated payloads, credential exfiltration, and malicious AI skills before execution.
+- [Tirith](https://github.com/sheeki03/tirith) — the terminal security scanner used after deterministic user and built-in rules. Intercepts homograph URLs, pipe-to-shell, ANSI injection, obfuscated payloads, credential exfiltration, and malicious AI skills before execution.
 
 ## License
 

@@ -16,7 +16,7 @@ describe("rule evaluation", () => {
   test("allow rules short-circuit common read-only commands", async () => {
     const evaluation = await evaluateRules(defaultPolicy().rules, { command: "echo hello" });
     expect(evaluation.decision).toBe("allow");
-    expect(evaluation.matchedRules.map((rule) => rule.label)).toContain("builtin[4]");
+    expect(evaluation.matchedRules.map((rule) => rule.label)).toContain("builtin.allow[0]");
   });
 
   test("normal git push goes to review", async () => {
@@ -24,10 +24,10 @@ describe("rule evaluation", () => {
     expect(evaluation.decision).toBe("review");
   });
 
-  test("git no-verify blocks even when it also looks like a normal git command", async () => {
+  test("leaves git no-verify unmatched for the scanner", async () => {
     const evaluation = await evaluateRules(defaultPolicy().rules, { command: "git commit --no-verify -m test" });
-    expect(evaluation.decision).toBe("block");
-    expect(evaluation.reasons).toContain("bypasses git hooks and safety checks");
+    expect(evaluation.decision).toBe("review");
+    expect(evaluation.matchedRules).toEqual([]);
   });
 });
 
