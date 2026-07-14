@@ -10,6 +10,7 @@ import { fetchSessionContext } from "./session-context";
 type ToolExecuteBefore = NonNullable<Hooks["tool.execute.before"]>;
 type ToolExecuteInput = Parameters<ToolExecuteBefore>[0];
 type ToolExecuteOutput = Parameters<ToolExecuteBefore>[1];
+export type ApprovalPluginInput = Pick<PluginInput, "directory"> & Partial<Pick<PluginInput, "client">>;
 
 const shellToolNames = new Set(["bash", "shell", "shell_command", "exec_command"]);
 
@@ -17,7 +18,7 @@ const handlesTool = (tool: string): boolean => {
   return shellToolNames.has(tool);
 };
 
-const createHook = (directory: string, client?: PluginInput["client"]): ToolExecuteBefore => {
+export const createHook = (directory: string, client?: PluginInput["client"]): ToolExecuteBefore => {
   const loaded = loadOrInitializePolicy(directory);
   return async (toolInput: ToolExecuteInput, toolOutput: ToolExecuteOutput) => {
     if (!handlesTool(toolInput.tool)) return;
@@ -35,14 +36,40 @@ const createHook = (directory: string, client?: PluginInput["client"]): ToolExec
       return;
     }
     const context = buildCommandContext(toolInput, toolOutput.args, directory, policy.review.maxScriptBytes);
-    if (!context) return;
+    if (!context) {
+      enforceVerdict(toolInput.tool, {
+        decision: "block",
+        source: "fail_closed",
+        riskLevel: "high",
+        userAuthorization: "unknown",
+        categories: [{ id: "security.command_unavailable", score: 1 }],
+        reasons: ["shell command is missing from the handled tool arguments"],
+        matchedRuleLabels: [],
+      });
+      return;
+    }
     const riskToolScan = await scanWithRiskTool(policy, context);
     const riskToolVerdict = verdictFromRiskToolScan(riskToolScan);
     if (riskToolVerdict) {
       enforceVerdict(toolInput.tool, riskToolVerdict);
       return;
     }
-    const evaluation = evaluateRules(policy.rules, context);
+    let evaluation;
+    try {
+      evaluation = await evaluateRules(policy.rules, context);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "unknown shell analysis failure";
+      enforceVerdict(toolInput.tool, {
+        decision: "block",
+        source: "fail_closed",
+        riskLevel: "high",
+        userAuthorization: "unknown",
+        categories: [{ id: "security.shell_parser_unavailable", score: 1 }],
+        reasons: [`shell analysis unavailable: ${message}`],
+        matchedRuleLabels: [],
+      });
+      return;
+    }
     const ruleVerdict = verdictFromRules(evaluation);
     // block rules: immediate deny
     if (evaluation.decision === "block" && ruleVerdict) {
@@ -66,7 +93,7 @@ const createHook = (directory: string, client?: PluginInput["client"]): ToolExec
 
 export default {
   id: "opencode-smart-approval",
-  server: async (input: PluginInput) => {
+  server: async (input: ApprovalPluginInput) => {
     return {
       "tool.execute.before": createHook(input.directory, input.client),
     };

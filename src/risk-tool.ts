@@ -1,5 +1,5 @@
 import { parseRiskToolMetadata, runTirithCompatibleTool } from "./risk-tool-runner";
-import type { RiskToolFinding, RiskToolMetadata } from "./risk-tool-runner";
+import type { RiskToolFinding, RiskToolMetadata, RiskToolProcessRun } from "./risk-tool-runner";
 import type {
   ApprovalVerdict,
   CommandContext,
@@ -120,12 +120,13 @@ const scanFromExit = (exitCode: number | null, metadata: RiskToolMetadata): Risk
   };
 };
 
-export const scanWithRiskTool = async (policy: ResolvedPolicy, context: CommandContext): Promise<RiskToolScan> => {
-  if (!policy.riskTool.enabled) return { action: "allow" };
-  const result = await runTirithCompatibleTool(policy, context);
+export const scanFromRiskToolResult = (
+  policy: ResolvedPolicy,
+  result: RiskToolProcessRun,
+): RiskToolScan => {
   switch (result.kind) {
     case "skipped":
-      return { action: "allow" };
+      return failureScan(policy, `risk tool unavailable: ${result.reason}`);
     case "timeout":
       return failureScan(policy, `risk tool timed out after ${String(policy.riskTool.timeoutMs)} ms`);
     case "error":
@@ -136,6 +137,11 @@ export const scanWithRiskTool = async (policy: ResolvedPolicy, context: CommandC
       }
       return scanFromExit(result.exitCode, parseRiskToolMetadata(result.stdout));
   }
+};
+
+export const scanWithRiskTool = async (policy: ResolvedPolicy, context: CommandContext): Promise<RiskToolScan> => {
+  if (!policy.riskTool.enabled) return { action: "allow" };
+  return scanFromRiskToolResult(policy, await runTirithCompatibleTool(policy, context));
 };
 
 export const evaluationWithRiskToolScan = (

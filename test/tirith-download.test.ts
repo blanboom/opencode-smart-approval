@@ -1,104 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { gzipSync } from "node:zlib";
-import { ensureTirithBinary, selectTirithAsset, tirithTargetForPlatform } from "../src/tirith-download";
+import { gunzipSync, gzipSync } from "node:zlib";
+import { extractBinaryFromTarGz, extractBinaryFromZip } from "../src/archive";
+import { ensureTirithBinary, MAX_TIRITH_ARCHIVE_BYTES, tirithTargetForPlatform } from "../src/tirith-download";
 import type { TirithDownloadClient } from "../src/types";
-
-const tempDir = (): string => {
-  return mkdtempSync(join(tmpdir(), "command-approval-test-"));
-};
-
-const tarGzWithFile = (name: string, content: Buffer): Buffer => {
-  const header = Buffer.alloc(512);
-  header.write(name, 0, "utf8");
-  header.write("0000755\0", 100, "ascii");
-  header.write("0000000\0", 108, "ascii");
-  header.write("0000000\0", 116, "ascii");
-  header.write(content.length.toString(8).padStart(11, "0") + "\0", 124, "ascii");
-  header.write(Math.floor(Date.now() / 1000).toString(8).padStart(11, "0") + "\0", 136, "ascii");
-  header.fill(" ", 148, 156);
-  header.write("0", 156, "ascii");
-  header.write("ustar\0", 257, "ascii");
-  header.write("00", 263, "ascii");
-  let checksum = 0;
-  for (const byte of header) checksum += byte;
-  header.write(checksum.toString(8).padStart(6, "0") + "\0 ", 148, "ascii");
-  const padding = Buffer.alloc((512 - (content.length % 512)) % 512);
-  return gzipSync(Buffer.concat([header, content, padding, Buffer.alloc(1024)]));
-};
-
-const zipWithFile = (name: string, content: Buffer): Buffer => {
-  const nameBuffer = Buffer.from(name);
-  const local = Buffer.alloc(30);
-  local.writeUInt32LE(0x04034b50, 0);
-  local.writeUInt16LE(20, 4);
-  local.writeUInt16LE(0, 6);
-  local.writeUInt16LE(0, 8);
-  local.writeUInt32LE(content.length, 18);
-  local.writeUInt32LE(content.length, 22);
-  local.writeUInt16LE(nameBuffer.length, 26);
-  const central = Buffer.alloc(46);
-  central.writeUInt32LE(0x02014b50, 0);
-  central.writeUInt16LE(20, 6);
-  central.writeUInt16LE(0, 10);
-  central.writeUInt32LE(content.length, 20);
-  central.writeUInt32LE(content.length, 24);
-  central.writeUInt16LE(nameBuffer.length, 28);
-  const centralOffset = local.length + nameBuffer.length + content.length;
-  const eocd = Buffer.alloc(22);
-  eocd.writeUInt32LE(0x06054b50, 0);
-  eocd.writeUInt16LE(1, 8);
-  eocd.writeUInt16LE(1, 10);
-  eocd.writeUInt32LE(central.length + nameBuffer.length, 12);
-  eocd.writeUInt32LE(centralOffset, 16);
-  return Buffer.concat([local, nameBuffer, content, central, nameBuffer, eocd]);
-};
+import { tarGzWithFile, tempDir, zipWithFile } from "./tirith-test-helpers";
 
 describe("tirith auto download", () => {
-  test("maps supported platforms to GitHub release assets", () => {
-    expect(tirithTargetForPlatform({ platform: "darwin", arch: "arm64" })?.assetName).toBe(
-      "tirith-aarch64-apple-darwin.tar.gz",
-    );
-    expect(tirithTargetForPlatform({ platform: "linux", arch: "x64" })?.assetName).toBe(
-      "tirith-x86_64-unknown-linux-gnu.tar.gz",
-    );
-    expect(tirithTargetForPlatform({ platform: "linux", arch: "arm64", libc: "musl" })?.assetName).toBe(
-      "tirith-aarch64-unknown-linux-musl.tar.gz",
-    );
-    expect(tirithTargetForPlatform({ platform: "linux", arch: "x64", libc: "musl" })).toBeUndefined();
-    expect(tirithTargetForPlatform({ platform: "win32", arch: "x64" })?.assetName).toBe(
-      "tirith-x86_64-pc-windows-msvc.zip",
-    );
-    expect(tirithTargetForPlatform({ platform: "win32", arch: "arm64" })).toBeUndefined();
-    expect(tirithTargetForPlatform({ platform: "freebsd", arch: "x64" })).toBeUndefined();
-  });
-
-  test("selects the newest version release with the matching asset and checksum", () => {
-    const target = tirithTargetForPlatform({ platform: "darwin", arch: "arm64" });
-    if (!target) throw new Error("expected supported test target");
-    const asset = selectTirithAsset(
-      [
-        {
-          tagName: "threatdb-latest",
-          assets: [{ name: "tirith-threatdb.dat", downloadUrl: "https://example.invalid/threatdb" }],
-        },
-        {
-          tagName: "v1.2.3",
-          assets: [
-            { name: "checksums.txt", downloadUrl: "https://example.invalid/checksums" },
-            { name: target.assetName, downloadUrl: "https://example.invalid/tirith" },
-          ],
-        },
-      ],
-      target,
-    );
-    expect(asset?.tagName).toBe("v1.2.3");
-    expect(asset?.binary.downloadUrl).toBe("https://example.invalid/tirith");
-  });
-
   test("downloads, verifies, extracts, and reuses Tirith in a temp cache", async () => {
     const directory = tempDir();
     const target = tirithTargetForPlatform({ platform: "darwin", arch: "arm64" });
@@ -146,6 +56,38 @@ describe("tirith auto download", () => {
     expect(downloads).toBe(2);
   });
 
+  test("does not trust a prepopulated cache binary without verified metadata", async () => {
+    const directory = tempDir();
+    const target = tirithTargetForPlatform({ platform: "darwin", arch: "arm64" });
+    if (!target) throw new Error("expected supported test target");
+    const installDir = join(directory, target.cacheKey);
+    mkdirSync(installDir, { recursive: true });
+    writeFileSync(join(installDir, target.binaryName), "#!/bin/sh\necho attacker\n");
+    chmodSync(join(installDir, target.binaryName), 0o755);
+    const verified = Buffer.from("#!/bin/sh\necho verified\n");
+    const archive = tarGzWithFile(target.binaryName, verified);
+    const digest = createHash("sha256").update(archive).digest("hex");
+    const result = await ensureTirithBinary({
+      cacheRoot: directory,
+      runtime: { platform: "darwin", arch: "arm64" },
+      client: {
+        listReleases: async () => [{
+          tagName: "v1.2.3",
+          assets: [
+            { name: "checksums.txt", downloadUrl: "https://example.invalid/checksums" },
+            { name: target.assetName, downloadUrl: "https://example.invalid/tirith" },
+          ],
+        }],
+        download: async (url) => Buffer.from(url.endsWith("/checksums")
+          ? `${digest}  ${target.assetName}\n`
+          : archive),
+      },
+    });
+    expect(result.kind).toBe("ready");
+    if (result.kind !== "ready") throw new Error("expected ready Tirith binary");
+    expect(readFileSync(result.path)).toEqual(verified);
+  });
+
   test("skips unsupported platforms instead of failing closed", async () => {
     const result = await ensureTirithBinary({
       cacheRoot: tempDir(),
@@ -191,5 +133,95 @@ describe("tirith auto download", () => {
     expect(result.kind).toBe("ready");
     if (result.kind !== "ready") throw new Error("expected ready Tirith binary");
     expect(readFileSync(result.path)).toEqual(binary);
+  });
+
+  test("refreshes stale cache metadata and installs a newer upstream release", async () => {
+    const directory = tempDir();
+    const target = tirithTargetForPlatform({ platform: "darwin", arch: "arm64" });
+    if (!target) throw new Error("expected supported test target");
+    const install = async (tagName: string, content: string, cacheMaxAgeMs?: number) => {
+      const binary = Buffer.from(content);
+      const archive = tarGzWithFile(target.binaryName, binary);
+      const digest = createHash("sha256").update(archive).digest("hex");
+      return ensureTirithBinary({
+        cacheRoot: directory,
+        runtime: { platform: "darwin", arch: "arm64" },
+        ...(cacheMaxAgeMs === undefined ? {} : { cacheMaxAgeMs }),
+        client: {
+          listReleases: async () => [{
+            tagName,
+            assets: [
+              { name: "checksums.txt", downloadUrl: "https://example.invalid/checksums" },
+              { name: target.assetName, downloadUrl: "https://example.invalid/tirith" },
+            ],
+          }],
+          download: async (url, maxBytes) => {
+            if (url.endsWith("/tirith")) expect(maxBytes).toBe(MAX_TIRITH_ARCHIVE_BYTES);
+            return Buffer.from(url.endsWith("/checksums") ? `${digest}  ${target.assetName}\n` : archive);
+          },
+        },
+      });
+    };
+    const first = await install("v1.2.3", "first\n");
+    if (first.kind !== "ready") throw new Error("expected initial Tirith binary");
+    const second = await install("v1.2.4", "second\n", 0);
+    if (second.kind !== "ready") throw new Error("expected refreshed Tirith binary");
+    expect(readFileSync(second.path, "utf8")).toBe("second\n");
+    const metadata = JSON.parse(readFileSync(`${second.path}.metadata.json`, "utf8")) as Record<string, unknown>;
+    expect(metadata["tagName"]).toBe("v1.2.4");
+    expect(metadata["assetName"]).toBe(target.assetName);
+    expect(metadata["archiveSha256"]).toMatch(/^[a-f0-9]{64}$/u);
+  });
+
+  test("refreshes a same-version cache from upstream checksum metadata without downloading the archive", async () => {
+    const directory = tempDir();
+    const target = tirithTargetForPlatform({ platform: "darwin", arch: "arm64" });
+    if (!target) throw new Error("expected supported test target");
+    const binary = Buffer.from("binary\n");
+    const archive = tarGzWithFile(target.binaryName, binary);
+    const digest = createHash("sha256").update(archive).digest("hex");
+    const releases = async () => [{
+      tagName: "v1.2.3",
+      assets: [
+        { name: "checksums.txt", downloadUrl: "https://example.invalid/checksums" },
+        { name: target.assetName, downloadUrl: "https://example.invalid/tirith" },
+      ],
+    }];
+    const first = await ensureTirithBinary({
+      cacheRoot: directory,
+      runtime: { platform: "darwin", arch: "arm64" },
+      client: {
+        listReleases: releases,
+        download: async (url) => Buffer.from(url.endsWith("/checksums") ? `${digest}  ${target.assetName}\n` : archive),
+      },
+    });
+    if (first.kind !== "ready") throw new Error("expected initial Tirith binary");
+    let archiveDownloads = 0;
+    const refreshed = await ensureTirithBinary({
+      cacheRoot: directory,
+      runtime: { platform: "darwin", arch: "arm64" },
+      cacheMaxAgeMs: 0,
+      client: {
+        listReleases: releases,
+        download: async (url) => {
+          if (url.endsWith("/tirith")) archiveDownloads += 1;
+          return Buffer.from(`${digest}  ${target.assetName}\n`);
+        },
+      },
+    });
+    expect(refreshed).toEqual(first);
+    expect(archiveDownloads).toBe(0);
+  });
+
+  test("rejects malformed tar and zip entry bounds before extraction", () => {
+    const tar = gunzipSync(tarGzWithFile("tirith", Buffer.from("tiny")));
+    tar.write("77777777777\0", 124, "ascii");
+    expect(() => extractBinaryFromTarGz(gzipSync(tar), "tirith")).toThrow("tar entry is outside");
+
+    const zip = zipWithFile("tirith.exe", Buffer.from("tiny"));
+    const eocd = zip.length - 22;
+    const centralOffset = zip.readUInt32LE(eocd + 16);
+    zip.writeUInt32LE(1024, centralOffset + 24);
+    expect(() => extractBinaryFromZip(zip, "tirith.exe")).toThrow("size does not match");
   });
 });

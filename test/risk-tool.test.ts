@@ -3,7 +3,12 @@ import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultPolicy } from "../src/default-config";
-import { evaluationWithRiskToolScan, scanWithRiskTool, verdictFromRiskToolScan } from "../src/risk-tool";
+import {
+  evaluationWithRiskToolScan,
+  scanFromRiskToolResult,
+  scanWithRiskTool,
+  verdictFromRiskToolScan,
+} from "../src/risk-tool";
 import { evaluateRules } from "../src/rules";
 import type { CommandContext, ResolvedPolicy } from "../src/types";
 
@@ -69,7 +74,7 @@ exit 2
     );
     const scan = await scanWithRiskTool(policyWithRiskTool(directory, { path }), commandContext(directory, "echo hello"));
     if (scan.action !== "warn") throw new Error("expected warning scan result");
-    const evaluation = evaluateRules(defaultPolicy().rules, { command: "echo hello" });
+    const evaluation = await evaluateRules(defaultPolicy().rules, { command: "echo hello" });
     const merged = evaluationWithRiskToolScan(evaluation, scan);
     expect(evaluation.decision).toBe("allow");
     expect(merged.decision).toBe("review");
@@ -86,5 +91,15 @@ exit 2
     expect(scan.action).toBe("block");
     expect(verdict?.source).toBe("fail_closed");
     expect(verdict?.reasons.join("; ")).toContain("risk tool failed to start");
+  });
+
+  test("treats an unavailable auto-install target according to fail_open", () => {
+    const directory = tempDir();
+    const skipped = { kind: "skipped", reason: "unsupported platform test/arch" } as const;
+    const closed = scanFromRiskToolResult(policyWithRiskTool(directory), skipped);
+    const opened = scanFromRiskToolResult(policyWithRiskTool(directory, { failOpen: true }), skipped);
+    expect(closed.action).toBe("block");
+    expect(closed.action === "block" ? closed.source : undefined).toBe("fail_closed");
+    expect(opened.action).toBe("allow");
   });
 });

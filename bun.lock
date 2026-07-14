@@ -8,6 +8,7 @@
         "@ai-sdk/openai-compatible": "3.0.5",
         "@opencode-ai/plugin": "1.4.1",
         "ai": "7.0.15",
+        "web-tree-sitter": "0.26.11",
         "zod": "4.1.13",
       },
       "devDependencies": {
@@ -61,6 +62,8 @@
     "typescript": ["typescript@6.0.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="],
 
     "undici-types": ["undici-types@8.3.0", "", {}, "sha512-j375ScV60dom+YkPFIfTLcOiPxkN/buHz5GobjLhixFuANaNs3C9l4GmrWqejgXWJ7BbJcFYpTEUkS1Ge8bpZQ=="],
+
+    "web-tree-sitter": ["web-tree-sitter@0.26.11", "", {}, "sha512-Q5Dm3YTIXSXuH6FxX6RuzX2Qwpc4DPGiYMU87Wg5Z8OIStiQFiUex4zMDc0vBTw78EphaYJacncJghCHzbZptg=="],
 
     "which": ["which@2.0.2", "", { "dependencies": { "isexe": "^2.0.0" }, "bin": { "node-which": "./bin/node-which" } }, "sha512-BLI3Tl1TW3Pvl70l3yq3Y64i+awpwXqsGBYWkkqMtnbXgrMD+yj7rhW0kuEDxzJaYXGjEW5ogapKNMEKNMjibA=="],
 

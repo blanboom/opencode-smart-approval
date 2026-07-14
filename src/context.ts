@@ -1,6 +1,8 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+import { allowedReadRoots, canonicalPath, withinPath } from "./path-boundary";
+import { isSensitivePathValue } from "./reader-paths";
 import type { CommandContext, ScriptEvidence } from "./types";
 
 const SHELLS = new Set(["sh", "bash", "zsh"]);
@@ -93,8 +95,15 @@ export const extractScriptPaths = (command: string, cwd: string): readonly strin
   return [...paths];
 };
 
-const readScriptEvidence = (path: string, maxBytes: number): ScriptEvidence => {
+const readScriptEvidence = (path: string, cwd: string, maxBytes: number): ScriptEvidence => {
   try {
+    const canonical = canonicalPath(path);
+    if (isSensitivePathValue(path) || isSensitivePathValue(canonical)) {
+      return { path, content: "", truncated: false, bytesRead: 0, error: "script path is sensitive and cannot be inspected" };
+    }
+    if (!allowedReadRoots(cwd).some((root) => withinPath(root, canonical))) {
+      return { path, content: "", truncated: false, bytesRead: 0, error: "script path is outside allowed read scope" };
+    }
     if (!existsSync(path)) {
       return { path, content: "", truncated: false, bytesRead: 0, error: "file does not exist before command execution" };
     }
@@ -124,7 +133,7 @@ export const buildCommandContext = (
 ): CommandContext | undefined => {
   const command = commandFromArgs(args);
   if (!command) return undefined;
-  const scriptEvidence = extractScriptPaths(command, cwd).map((path) => readScriptEvidence(path, maxScriptBytes));
+  const scriptEvidence = extractScriptPaths(command, cwd).map((path) => readScriptEvidence(path, cwd, maxScriptBytes));
   return {
     sessionID: input.sessionID,
     tool: input.tool,

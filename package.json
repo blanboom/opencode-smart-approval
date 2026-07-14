@@ -9,6 +9,7 @@
   },
   "files": [
     "src",
+    "assets",
     "README.md",
     "README.zh-CN.md",
     "LICENSE"
@@ -21,6 +22,7 @@
     "@ai-sdk/openai-compatible": "3.0.5",
     "@opencode-ai/plugin": "1.4.1",
     "ai": "7.0.15",
+    "web-tree-sitter": "0.26.11",
     "zod": "4.1.13"
   },
   "devDependencies": {

@@ -14,7 +14,7 @@ import {
 } from "./policy-test-helpers";
 
 describe("policy trust boundary", () => {
-  test("ignores untrusted local config unless the trusted global config opts in", () => {
+  test("ignores untrusted local config unless the trusted global config opts in", async () => {
     // Given a trusted global block policy and a malicious project-local allow-all policy.
     const directory = tempDir();
     writeLocalPolicy(directory, {
@@ -51,10 +51,10 @@ describe("policy trust boundary", () => {
     expect(loaded.result.policy.review.model).toBe("global-model");
     expect(loaded.result.policy.riskTool.enabled).toBe(true);
     expect(loaded.result.policy.riskTool.failOpen).toBe(false);
-    expect(evaluateRules(loaded.result.policy.rules, { command: "dangerous" }).decision).toBe("block");
+    expect((await evaluateRules(loaded.result.policy.rules, { command: "dangerous" })).decision).toBe("block");
   });
 
-  test("loads local config only when the trusted global config opts in", () => {
+  test("loads local config only when the trusted global config opts in", async () => {
     // Given a global policy that explicitly delegates to project-local config.
     const directory = tempDir();
     writeLocalPolicy(directory, {
@@ -88,8 +88,8 @@ describe("policy trust boundary", () => {
     expect(loaded.policy.riskTool.enabled).toBe(false);
     expect(loaded.policy.riskTool.failOpen).toBe(true);
     expect(Object.keys(loaded.policy).sort()).toEqual(["review", "riskTool", "rules"]);
-    expect(evaluateRules(loaded.policy.rules, { command: "block-local" }).decision).toBe("block");
-    expect(evaluateRules(loaded.policy.rules, { command: "block-global" }).decision).toBe("review");
+    expect((await evaluateRules(loaded.policy.rules, { command: "block-local" })).decision).toBe("block");
+    expect((await evaluateRules(loaded.policy.rules, { command: "block-global" })).decision).toBe("review");
   });
 
   test("rejects a non-boolean global local-config opt-in", () => {
@@ -210,7 +210,7 @@ describe("policy trust boundary", () => {
     expect(loaded.policy.review.baseURL).toBe("https://example.com/v1");
   });
 
-  test("applies the global opt-in gate to legacy local config", () => {
+  test("applies the global opt-in gate to legacy local config", async () => {
     // Given a legacy project-local policy attempting to replace a trusted global block.
     const directory = tempDir();
     writeFileSync(
@@ -225,7 +225,7 @@ describe("policy trust boundary", () => {
     // Then the legacy local policy cannot bypass the global block.
     expect(loaded.ok).toBe(true);
     expect(loaded.policy.riskTool.enabled).toBe(true);
-    expect(evaluateRules(loaded.policy.rules, { command: "dangerous" }).decision).toBe("block");
+    expect((await evaluateRules(loaded.policy.rules, { command: "dangerous" })).decision).toBe("block");
   });
 
   test("fails closed when an opted-in local config is malformed", () => {

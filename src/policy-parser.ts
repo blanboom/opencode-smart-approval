@@ -4,7 +4,16 @@ import {
   DEFAULT_RISK_TOOL,
 } from "./default-config";
 import { DEFAULT_REVIEWER_POLICY } from "./prompt";
-import type { ApprovalPolicy, CommandRule, ReviewConfig, RiskToolConfig, RuleDecision } from "./types";
+import { isLegacyGeneratedRule } from "./legacy-generated-rules";
+import { compileRule, ruleIdentity } from "./rule-compiler";
+import type {
+  ApprovalPolicy,
+  CommandRule,
+  ReviewConfig,
+  RiskToolConfig,
+  RuleDecision,
+  RuleScope,
+} from "./types";
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -97,45 +106,67 @@ const isValidUrl = (value: string): boolean => {
 const ruleFromUnknown = (value: unknown, decision: RuleDecision, index: number): CommandRule => {
   const label = `${decision}[${String(index)}]`;
   if (typeof value === "string" && value.length > 0) {
-    new RegExp(value, "u");
-    return { label, match: value, decision };
+    return compileRule({ label, match: value, decision, origin: "user" });
   }
   if (!isRecord(value)) throw new Error("rule must be a regex string or an object");
   const match = stringField(value, "match");
   const reason = stringField(value, "reason");
   if (!match) throw new Error("rule object requires match");
-  new RegExp(match, "u");
-  return { label, match, decision, ...(reason ? { reason } : {}) };
+  const rawScope = value["scope"];
+  if (rawScope !== undefined && rawScope !== "command" && rawScope !== "segment") {
+    throw new Error("rule.scope must be command or segment");
+  }
+  const scope: RuleScope = rawScope ?? "command";
+  const rawPriority = value["priority"];
+  if (rawPriority !== undefined && (typeof rawPriority !== "number" || !Number.isSafeInteger(rawPriority))) {
+    throw new Error("rule.priority must be a safe integer");
+  }
+  const priority = rawPriority ?? 0;
+  return compileRule({
+    label,
+    match,
+    decision,
+    scope,
+    priority,
+    origin: "user",
+    ...(reason ? { reason } : {}),
+  });
 };
 
-const ruleListFromUnknown = (value: unknown, decision: RuleDecision): readonly CommandRule[] => {
+const ruleListFromUnknown = (
+  value: unknown,
+  decision: RuleDecision,
+  retireLegacyGenerated: boolean,
+): readonly CommandRule[] => {
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw new Error(`policy.rules.${decision} must be an array`);
-  return value.map((rule, index) => ruleFromUnknown(rule, decision, index));
+  return value
+    .filter((rule) => !(retireLegacyGenerated && typeof rule === "string" && isLegacyGeneratedRule(decision, rule)))
+    .map((rule, index) => ruleFromUnknown(rule, decision, index));
 };
 
 const mergeRules = (
   userRules: readonly CommandRule[],
   fallbackRules: readonly CommandRule[],
 ): readonly CommandRule[] => {
-  return [
-    ...userRules,
-    ...fallbackRules.map((rule, index) => ({
-      ...rule,
-      label: `builtin[${String(index)}]`,
-      decision: rule.decision,
-    })),
-  ];
+  const identities = new Set<string>();
+  const merged: CommandRule[] = [];
+  for (const rule of [...userRules, ...fallbackRules]) {
+    const identity = ruleIdentity(rule);
+    if (identities.has(identity)) continue;
+    identities.add(identity);
+    merged.push(rule);
+  }
+  return merged;
 };
 
-const rulesFromUnknown = (value: unknown, fallbackRules: readonly CommandRule[]): readonly CommandRule[] => {
-  if (!isRecord(value)) return fallbackRules;
+const rulesFromUnknown = (value: unknown, retireLegacyGenerated: boolean): readonly CommandRule[] => {
+  if (!isRecord(value)) return [];
   const userRules = [
-    ...ruleListFromUnknown(value["block"], "block"),
-    ...ruleListFromUnknown(value["review"], "review"),
-    ...ruleListFromUnknown(value["allow"], "allow"),
+    ...ruleListFromUnknown(value["block"], "block", retireLegacyGenerated),
+    ...ruleListFromUnknown(value["review"], "review", retireLegacyGenerated),
+    ...ruleListFromUnknown(value["allow"], "allow", retireLegacyGenerated),
   ];
-  if (userRules.length === 0) return fallbackRules;
   return userRules;
 };
 
@@ -199,9 +230,14 @@ const riskToolFromUnknown = (value: unknown): RiskToolConfig => {
 
 export const policyFromUnknown = (value: unknown, fallbackRules: readonly CommandRule[]): ApprovalPolicy => {
   if (!isRecord(value)) throw new Error("policy must be a JSON object");
+  const rawVersion = value["version"];
+  if (rawVersion !== undefined && rawVersion !== 1 && rawVersion !== 2) {
+    throw new Error("version must be 1 or 2");
+  }
+  const retireLegacyGenerated = rawVersion === undefined || rawVersion < 2;
   return {
     review: reviewFromUnknown(value["review"]),
     riskTool: riskToolFromUnknown(value["tirith"] ?? value["risk_tool"]),
-    rules: mergeRules(rulesFromUnknown(value["rules"], fallbackRules), fallbackRules),
+    rules: mergeRules(rulesFromUnknown(value["rules"], retireLegacyGenerated), fallbackRules),
   };
 };

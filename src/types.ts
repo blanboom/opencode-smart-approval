@@ -1,5 +1,9 @@
 export type RuleDecision = "allow" | "block" | "review";
 
+export type RuleScope = "command" | "segment";
+
+export type RuleOrigin = "user" | "builtin";
+
 export type EvaluationDecision = RuleDecision | "review";
 
 export type RiskLevel = "low" | "medium" | "high" | "critical";
@@ -15,6 +19,10 @@ export type CommandRule = {
   readonly label: string;
   readonly match: string;
   readonly decision: RuleDecision;
+  readonly scope: RuleScope;
+  readonly priority: number;
+  readonly origin: RuleOrigin;
+  readonly regex: RegExp;
   readonly reason?: string;
 };
 
@@ -55,7 +63,7 @@ export type TirithRelease = {
 
 export type TirithDownloadClient = {
   readonly listReleases: () => Promise<readonly TirithRelease[]>;
-  readonly download: (url: string) => Promise<Buffer>;
+  readonly download: (url: string, maxBytes?: number) => Promise<Buffer>;
 };
 
 export type ApprovalPolicy = {
@@ -83,8 +91,54 @@ export type CommandContext = {
   readonly scriptEvidence: readonly ScriptEvidence[];
 };
 
+export type ShellSegment = {
+  readonly source: string;
+  readonly normalizedSource: string;
+  readonly commandName: string;
+  readonly arguments: readonly string[];
+  readonly rawArguments: readonly string[];
+  readonly environment: readonly ShellAssignment[];
+  readonly redirections: readonly ShellRedirection[];
+  readonly startByte: number;
+  readonly endByte: number;
+  readonly nested: boolean;
+  readonly stdinFromPipe: boolean;
+};
+
+export type ShellAssignment = {
+  readonly name: string;
+  readonly value: string;
+  readonly raw: string;
+};
+
+export type ShellRedirection = {
+  readonly operator: string;
+  readonly target: {
+    readonly raw: string;
+    readonly value: string;
+  };
+};
+
+export type ShellIssueKind = "syntax" | "dynamic" | "unsupported" | "limit";
+
+export type ShellIssue = {
+  readonly kind: ShellIssueKind;
+  readonly reason: string;
+};
+
+export type ShellAnalysis = {
+  readonly source: string;
+  readonly segments: readonly ShellSegment[];
+  readonly redirections: readonly ShellRedirection[];
+  readonly issues: readonly ShellIssue[];
+  readonly nestedAnalyses: readonly ShellAnalysis[];
+};
+
 export type MatchedRule = CommandRule & {
   readonly index: number;
+  readonly segmentSource?: string;
+  readonly startByte?: number;
+  readonly endByte?: number;
 };
 
 export type RuleEvaluation = {

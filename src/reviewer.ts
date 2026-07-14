@@ -3,9 +3,10 @@ import { generateText, isStepCount, zodSchema } from "ai";
 import { z } from "zod";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { resolve, relative, isAbsolute } from "node:path";
-import { tmpdir } from "node:os";
 import type { CommandContext, ResolvedPolicy, ReviewResponse, RuleEvaluation } from "./types";
 import { buildReviewPrompt } from "./prompt";
+import { allowedReadRoots, canonicalPath, withinPath } from "./path-boundary";
+import { isSensitivePathValue } from "./reader-paths";
 
 const REVIEW_OUTPUT_SCHEMA = z.object({
   outcome: z.enum(["allow", "deny"]),
@@ -57,11 +58,12 @@ const extractJsonFromText = (text: string): string => {
 
 const isPathAllowed = (path: string, cwd: string): boolean => {
   const resolved = isAbsolute(path) ? resolve(path) : resolve(cwd, path);
-  const allowedRoots = [resolve(cwd), resolve(tmpdir())];
-  return allowedRoots.some((root) => resolved === root || resolved.startsWith(root + "/"));
+  const canonical = canonicalPath(resolved);
+  return !isSensitivePathValue(resolved) && !isSensitivePathValue(canonical) &&
+    allowedReadRoots(cwd).some((root) => withinPath(root, canonical));
 };
 
-const safeReadFile = (path: string, cwd: string, maxBytes: number = 10000): string => {
+export const safeReadFile = (path: string, cwd: string, maxBytes: number = 10000): string => {
   const resolved = isAbsolute(path) ? resolve(path) : resolve(cwd, path);
   if (!isPathAllowed(resolved, cwd)) return `Error: path ${path} is outside allowed read scope`;
   try {
@@ -76,7 +78,7 @@ const safeReadFile = (path: string, cwd: string, maxBytes: number = 10000): stri
   }
 };
 
-const safeListFiles = (path: string, cwd: string): string => {
+export const safeListFiles = (path: string, cwd: string): string => {
   const resolved = isAbsolute(path) ? resolve(path) : resolve(cwd, path);
   if (!isPathAllowed(resolved, cwd)) return `Error: path ${path} is outside allowed read scope`;
   try {
