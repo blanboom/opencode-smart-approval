@@ -1,13 +1,14 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { countSessionRows } from "../scripts/opencode-e2e/database";
 
 describe("isolated OpenCode database receipts", () => {
   test("counts only rows in the exact harness database", () => {
     // Given an isolated database containing one session row.
-    const root = mkdtempSync("/private/tmp/opencode-db-receipt-test-");
+    const root = mkdtempSync(join(tmpdir(), "opencode-db-receipt-test-"));
     const path = join(root, "opencode.sqlite");
     const database = new Database(path, { create: true, strict: true });
     let closed = false;

@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { inspectLocalOpenCodeBinary, requireBinaryLockReceipts } from "../scripts/opencode-e2e/binary";
 
+const DARWIN_ARM64 = process.platform === "darwin" && process.arch === "arm64";
+
 describe("pinned local OpenCode binary", () => {
-  test("resolves the project binary and proves wrapper, platform, and string receipts", () => {
+  test.skipIf(!DARWIN_ARM64)("resolves the project binary and proves wrapper, platform, and string receipts", () => {
     // Given the frozen Todo 12 install in the current package root.
     const root = new URL("..", import.meta.url).pathname.replace(/\/$/u, "");
 

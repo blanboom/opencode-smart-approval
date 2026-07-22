@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Hooks } from "@opencode-ai/plugin";
 import { APPROVAL_AGENT_NAME } from "../src/approval-agent";
@@ -8,9 +9,10 @@ import { fakeClient, type FakeMethod } from "./fixtures/opencode-client-fake";
 import { expectedAgentFixture, validCreatedSession, validPromptResponse } from "./fixtures/opencode-review-fixtures";
 
 const temporaryDirectories: string[] = [];
+const TEMPORARY_ROOT = realpathSync(tmpdir());
 
 const temporaryDirectory = (): string => {
-  const directory = mkdtempSync(join("/private/tmp", "opencode-smart-approval-policy-snapshot-"));
+  const directory = mkdtempSync(join(TEMPORARY_ROOT, "opencode-smart-approval-policy-snapshot-"));
   temporaryDirectories.push(directory);
   return directory;
 };
@@ -105,7 +107,7 @@ describe("production policy snapshot", () => {
     // When the real exported server registers its agent and reviews the exact command after the disk mutation.
     process.env["XDG_CONFIG_HOME"] = xdgConfig;
     process.env["XDG_DATA_HOME"] = xdgData;
-    process.env["TMPDIR"] = "/private/tmp";
+    process.env["TMPDIR"] = TEMPORARY_ROOT;
     try {
       hooks = await approvalPlugin.server(input);
       const config: Parameters<NonNullable<Hooks["config"]>>[0] = { small_model: "fallback-provider/fallback-model" };

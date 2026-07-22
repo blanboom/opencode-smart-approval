@@ -7,8 +7,10 @@ import {
   requireOwnedTcpListener,
 } from "../scripts/opencode-e2e/loopback-guard";
 
+const DARWIN_ARM64 = process.platform === "darwin" && process.arch === "arm64";
+
 describe("harness-owned OpenCode fallback guard", () => {
-  test("holds 4096 under the exact harness PID and exposes its listener FD", async () => {
+  test.skipIf(!DARWIN_ARM64)("holds 4096 under the exact harness PID and exposes its listener FD", async () => {
     // Given the harness has acquired the fixed loopback guard before an OpenCode spawn.
     const guard = acquireLoopbackGuard();
     try {
@@ -43,7 +45,7 @@ describe("harness-owned OpenCode fallback guard", () => {
     expect(await waitForPortClosure(4096, 1_000)).toBe(true);
   });
 
-  test("accepts only an exact-PID non-4096 listener while the guard remains owned", async () => {
+  test.skipIf(!DARWIN_ARM64)("accepts only an exact-PID non-4096 listener while the guard remains owned", async () => {
     // Given the fixed guard and a distinct harness-owned OS-assigned loopback listener.
     const guard = acquireLoopbackGuard();
     const fallback = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("fallback") });

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { z } from "zod";
 import { buildHarnessConfigDocuments, type ModelRoute } from "../scripts/opencode-e2e/config";
@@ -151,7 +152,7 @@ describe("flattened v2 SDK boundary", () => {
 describe("isolated OpenCode config dependency", () => {
   test("copies the exact plugin and writes matching npm lock metadata", () => {
     // Given a fresh isolated config directory and the frozen project install.
-    const root = mkdtempSync("/private/tmp/opencode-plugin-seed-test-");
+    const root = mkdtempSync(join(tmpdir(), "opencode-plugin-seed-test-"));
     const packageRoot = resolve(import.meta.dir, "..");
     const configDirectory = join(root, "config", "opencode");
 
