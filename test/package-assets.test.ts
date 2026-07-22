@@ -68,7 +68,7 @@ describe("published shell parser assets", () => {
     // Then root dependencies, runtime entry, required assets, and every shipped path match the positive contract.
     expect(packed.exitCode).toBe(0);
     expect(packageJson).toMatchObject({
-      version: "0.6.0",
+      version: "0.6.1",
       main: "src/index.ts",
       exports: { ".": "./src/index.ts" },
       files: ["src", "assets", "README.md", "README.zh-CN.md", "LICENSE"],
