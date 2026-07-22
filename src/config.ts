@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { defaultConfigJson, defaultPolicy } from "./default-config";
-import { parsePolicyJsonc, policyFromUnknown, stripJsonComments } from "./policy-parser";
+import { parsePolicyJsonc, policyDocumentFromUnknown, stripJsonComments } from "./policy-parser";
 import type { ResolvedPolicy } from "./types";
 
 export { stripJsonComments };
@@ -22,20 +22,19 @@ const legacyGlobalPolicyPath = (): string => join(globalConfigDir(), LEGACY_POLI
 const localPolicyPath = (directory: string): string => join(directory, POLICY_FILE_NAME);
 const legacyLocalPolicyPath = (directory: string): string => join(directory, LEGACY_POLICY_FILE_NAME);
 
-export const policyCandidatePaths = (directory: string): readonly string[] => [
-  globalPolicyPath(),
-  legacyGlobalPolicyPath(),
-  localPolicyPath(directory),
-  legacyLocalPolicyPath(directory),
-];
-
-
 export type PolicyLoadResult =
-  | { readonly ok: true; readonly policy: ResolvedPolicy; readonly path: string; readonly initialized: boolean }
+  | {
+      readonly ok: true;
+      readonly policy: ResolvedPolicy;
+      readonly path: string;
+      readonly effectivePolicyPaths: readonly string[];
+      readonly initialized: boolean;
+    }
   | {
       readonly ok: false;
       readonly policy: ResolvedPolicy;
       readonly path: string;
+      readonly effectivePolicyPaths: readonly string[];
       readonly initialized: boolean;
       readonly error: string;
     };
@@ -77,7 +76,15 @@ const resolveGlobal = (): LoadOutcome => {
   const gPath = globalPolicyPath();
   const gLegacy = legacyGlobalPolicyPath();
   if (existsSync(gPath)) return loadFromFile(gPath, false);
-  if (existsSync(gLegacy)) return loadFromFile(gLegacy, false);
+  if (existsSync(gLegacy)) {
+    return {
+      ok: false,
+      data: undefined,
+      error: "legacy policy filename is not supported",
+      path: gLegacy,
+      initialized: false,
+    };
+  }
   return initGlobalFile();
 };
 
@@ -85,24 +92,22 @@ const resolveLocal = (directory: string): LoadOutcome | undefined => {
   const lPath = localPolicyPath(directory);
   const lLegacy = legacyLocalPolicyPath(directory);
   if (existsSync(lPath)) return loadFromFile(lPath, false);
-  if (existsSync(lLegacy)) return loadFromFile(lLegacy, false);
+  if (existsSync(lLegacy)) {
+    return {
+      ok: false,
+      data: undefined,
+      error: "legacy policy filename is not supported",
+      path: lLegacy,
+      initialized: false,
+    };
+  }
   return undefined;
-};
-
-const isConfigRecord = (value: unknown): value is Record<string, unknown> => {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-};
-
-const allowsLocalConfig = (value: unknown): boolean => {
-  if (!isConfigRecord(value)) return false;
-  if (!Object.hasOwn(value, "allow_local_config")) return false;
-  const candidate = value["allow_local_config"];
-  if (typeof candidate !== "boolean") throw new Error("allow_local_config must be a boolean");
-  return candidate;
 };
 
 export const loadOrInitializePolicy = (directory: string): PolicyLoadResult => {
   const fallbackRules = defaultPolicy().rules;
+  const effectiveGlobalPath = globalPolicyPath();
+  const globalEffectivePaths = [effectiveGlobalPath] as const;
 
   const global = resolveGlobal();
   if (!global.ok) {
@@ -110,6 +115,7 @@ export const loadOrInitializePolicy = (directory: string): PolicyLoadResult => {
       ok: false,
       policy: defaultPolicy(),
       path: global.path,
+      effectivePolicyPaths: globalEffectivePaths,
       initialized: global.initialized,
       error: global.error ?? "global policy load failed",
     };
@@ -117,36 +123,62 @@ export const loadOrInitializePolicy = (directory: string): PolicyLoadResult => {
 
   let trustedGlobal: { readonly policy: ResolvedPolicy; readonly allowLocalConfig: boolean };
   try {
-    const policy = policyFromUnknown(global.data, fallbackRules);
-    const allowLocalConfig = allowsLocalConfig(global.data);
-    trustedGlobal = { policy, allowLocalConfig };
+    trustedGlobal = policyDocumentFromUnknown(global.data, fallbackRules);
   } catch (error) {
     const message = error instanceof Error ? error.message : "unknown policy load failure";
-    return { ok: false, policy: defaultPolicy(), path: global.path, initialized: global.initialized, error: message };
+    return {
+      ok: false,
+      policy: defaultPolicy(),
+      path: global.path,
+      effectivePolicyPaths: globalEffectivePaths,
+      initialized: global.initialized,
+      error: message,
+    };
   }
 
   if (!trustedGlobal.allowLocalConfig) {
-    return { ok: true, policy: trustedGlobal.policy, path: global.path, initialized: global.initialized };
+    return {
+      ok: true,
+      policy: trustedGlobal.policy,
+      path: global.path,
+      effectivePolicyPaths: globalEffectivePaths,
+      initialized: global.initialized,
+    };
   }
 
+  const localEffectivePaths = [effectiveGlobalPath, localPolicyPath(directory)] as const;
   const local = resolveLocal(directory);
   if (!local) {
-    return { ok: true, policy: trustedGlobal.policy, path: global.path, initialized: global.initialized };
+    return {
+      ok: true,
+      policy: trustedGlobal.policy,
+      path: global.path,
+      effectivePolicyPaths: localEffectivePaths,
+      initialized: global.initialized,
+    };
   }
   if (!local.ok) {
     return {
       ok: false,
       policy: defaultPolicy(),
       path: local.path,
+      effectivePolicyPaths: localEffectivePaths,
       initialized: false,
       error: local.error ?? "local policy load failed",
     };
   }
   try {
-    const policy = policyFromUnknown(local.data, fallbackRules);
-    return { ok: true, policy, path: local.path, initialized: false };
+    const resolved = policyDocumentFromUnknown(local.data, fallbackRules);
+    return { ok: true, policy: resolved.policy, path: local.path, effectivePolicyPaths: localEffectivePaths, initialized: false };
   } catch (error) {
     const message = error instanceof Error ? error.message : "unknown policy load failure";
-    return { ok: false, policy: defaultPolicy(), path: local.path, initialized: false, error: message };
+    return {
+      ok: false,
+      policy: defaultPolicy(),
+      path: local.path,
+      effectivePolicyPaths: localEffectivePaths,
+      initialized: false,
+      error: message,
+    };
   }
 };

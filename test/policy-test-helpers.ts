@@ -38,23 +38,29 @@ export const withXdg = <T>(fn: () => T): T => {
 };
 
 export const reviewFixture = (overrides: JsonObject = {}): JsonObject => ({
-  base_url: "https://example.com/v1",
-  api_key: "test-key",
-  model: "test-model",
+  model: "test-provider/test-model",
   timeout_ms: 45_000,
-  max_script_bytes: 20_000,
   ...overrides,
 });
 
 export const policyFixture = (review: JsonObject = reviewFixture()): JsonObject => ({
+  version: 3,
   review,
-  rules: { block: [], allow: [] },
+  rules: { deny: [], review: [], allow: [] },
 });
 
+const completePolicy = (policy: JsonObject): JsonObject => ({ version: 3, review: {}, ...policy });
+
 export const writeLocalPolicy = (directory: string, policy: JsonObject | string): void => {
-  writeFileSync(join(directory, POLICY_FILE_NAME), typeof policy === "string" ? policy : JSON.stringify(policy));
+  writeFileSync(
+    join(directory, POLICY_FILE_NAME),
+    typeof policy === "string" ? policy : JSON.stringify(completePolicy(policy)),
+  );
 };
 
 export const writeGlobalPolicy = (policy: JsonObject | string): void => {
-  writeFileSync(join(xdgConfigHome(), "opencode", POLICY_FILE_NAME), typeof policy === "string" ? policy : JSON.stringify(policy));
+  writeFileSync(
+    join(xdgConfigHome(), "opencode", POLICY_FILE_NAME),
+    typeof policy === "string" ? policy : JSON.stringify(completePolicy(policy)),
+  );
 };

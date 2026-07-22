@@ -10,8 +10,8 @@ const staticArguments = "(?:\\s+[^\\r\\n]*)?\\s*$";
 
 const definitions = [
   {
-    match: `^(?:(?:/bin/)?(?:echo|true|false|test|\\[)|(?:/usr/bin/)?printf)${staticArguments}`,
-    reason: "common shell glue without redirection",
+    match: `^(?:/bin/)?(?:true|false|test|\\[)${staticArguments}`,
+    reason: "shell predicates without redirection",
   },
   {
     match: `^(?:(?:/usr/bin/|/bin/)?(?:ls|pwd|basename|dirname))${staticArguments}`,

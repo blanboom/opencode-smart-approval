@@ -1,5 +1,6 @@
 import { basename } from "node:path";
-import type { ShellSegment } from "./types";
+import { directTargetKind, isRecognizedWrapper, isTerminalWrapperForm, wrapperTarget, type WrapperTarget } from "./command-wrapper-targets";
+import type { ExecutionAssignment, ExecutionTargetKind, ShellAssignment, ShellSegment, ShellWord, ShellWrapper } from "./types";
 
 export type CommandArgument = {
   readonly raw: string;
@@ -11,143 +12,117 @@ export type CommandInvocation = {
   readonly commandName: string;
   readonly arguments: readonly string[];
   readonly rawArguments: readonly string[];
+  readonly argumentWords: readonly ShellWord[];
+  readonly originalExecutable: ShellWord;
+  readonly originalArguments: readonly ShellWord[];
+  readonly effectiveExecutable: ShellWord;
+  readonly targetKind: ExecutionTargetKind;
+  readonly executionCwd: string;
+  readonly executionCwdKnown: boolean;
+  readonly assignments: readonly ExecutionAssignment[];
+  readonly wrapperChain: readonly ShellWrapper[];
+  readonly terminalAllowEligible: boolean;
   readonly argumentOffset: number;
   readonly reviewReasons: readonly string[];
+};
+
+type InvocationSeed = {
+  readonly executable: ShellWord;
+  readonly arguments: readonly ShellWord[];
+  readonly assignments: readonly ShellAssignment[];
+  readonly cwd?: string;
+  readonly cwdKnown?: boolean;
 };
 
 export const commandBasename = (invocation: Pick<CommandInvocation, "commandName">): string =>
   basename(invocation.commandName);
 
-export const invocationFromSegment = (segment: ShellSegment): CommandInvocation => ({
-  commandName: segment.commandName,
-  arguments: segment.arguments,
-  rawArguments: segment.rawArguments,
-  argumentOffset: 0,
-  reviewReasons: [],
+const withTerminalEligibility = (invocation: CommandInvocation): CommandInvocation => ({
+  ...invocation,
+  terminalAllowEligible: invocation.wrapperChain.length === 0
+    && invocation.assignments.length === 0
+    && invocation.reviewReasons.length === 0
+    && invocation.originalExecutable.expansionFree
+    && invocation.effectiveExecutable.expansionFree
+    && invocation.originalExecutable.value === invocation.effectiveExecutable.value,
+});
+
+export const commandInvocation = ({ executable, arguments: words, assignments, cwd = process.cwd(), cwdKnown = true }: InvocationSeed): CommandInvocation =>
+  withTerminalEligibility({
+    commandName: executable.value,
+    arguments: words.map((word) => word.value),
+    rawArguments: words.map((word) => word.raw),
+    argumentWords: words,
+    originalExecutable: executable,
+    originalArguments: words,
+    effectiveExecutable: executable,
+    targetKind: directTargetKind(executable),
+    executionCwd: cwd,
+    executionCwdKnown: cwdKnown,
+    assignments: assignments.map((assignment) => ({ ...assignment, source: "shell" })),
+    wrapperChain: [],
+    terminalAllowEligible: false,
+    argumentOffset: 0,
+    reviewReasons: [],
+  });
+
+export const invocationFromSegment = (segment: ShellSegment): CommandInvocation => commandInvocation({
+  executable: segment.originalExecutable,
+  arguments: segment.argumentWords,
+  assignments: segment.environment,
+  cwd: segment.wrapperChain[0]?.executionCwd ?? segment.executionCwd,
+  cwdKnown: segment.executionCwdKnown,
 });
 
 export const commandArguments = (invocation: CommandInvocation): readonly CommandArgument[] =>
-  invocation.arguments.map((value, index) => ({ raw: invocation.rawArguments[index] ?? value, value }));
+  invocation.argumentWords.map((word) => ({ raw: word.raw, value: word.value }));
 
-const advance = (
-  invocation: CommandInvocation,
-  index: number,
-  reviewReason?: string,
-): CommandInvocation | undefined => {
-  const commandName = invocation.arguments[index];
-  if (!commandName) return undefined;
-  return {
-    commandName,
-    arguments: invocation.arguments.slice(index + 1),
-    rawArguments: invocation.rawArguments.slice(index + 1),
-    argumentOffset: invocation.argumentOffset + index + 1,
-    reviewReasons: reviewReason
-      ? [...invocation.reviewReasons, reviewReason]
-      : invocation.reviewReasons,
-  };
-};
-
-const commandTarget = (invocation: CommandInvocation): CommandInvocation | undefined => {
-  for (let index = 0; index < invocation.arguments.length; index += 1) {
-    const argument = invocation.arguments[index] ?? "";
-    if (argument === "-v" || argument === "-V") return undefined;
-    if (argument === "-p" || argument === "--") continue;
-    if (argument.startsWith("-")) return undefined;
-    return advance(invocation, index);
-  }
-  return undefined;
-};
-
-const envTarget = (invocation: CommandInvocation): CommandInvocation | undefined => {
-  for (let index = 0; index < invocation.arguments.length; index += 1) {
-    const argument = invocation.arguments[index] ?? "";
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/u.test(argument) || argument === "--" || argument === "-i" || argument === "--ignore-environment") {
-      continue;
-    }
-    if (argument === "-u" || argument === "--unset") {
-      index += 1;
-      continue;
-    }
-    if (argument.startsWith("--unset=")) continue;
-    if (argument.startsWith("-")) return undefined;
-    return advance(invocation, index);
-  }
-  return undefined;
-};
-
-const firstArgumentTarget = (
-  invocation: CommandInvocation,
-  reason?: string,
-): CommandInvocation | undefined => advance(invocation, 0, reason);
-
-const execTarget = (invocation: CommandInvocation): CommandInvocation | undefined => {
-  for (let index = 0; index < invocation.arguments.length; index += 1) {
-    const argument = invocation.arguments[index] ?? "";
-    if (argument === "-a") {
-      index += 1;
-      continue;
-    }
-    if (argument === "--" || /^-[cl]+$/u.test(argument)) continue;
-    if (argument.startsWith("-")) return undefined;
-    return advance(invocation, index, "exec dispatch replaces the current shell process");
-  }
-  return undefined;
-};
-
-const timeTarget = (invocation: CommandInvocation): CommandInvocation | undefined => {
-  for (let index = 0; index < invocation.arguments.length; index += 1) {
-    const argument = invocation.arguments[index] ?? "";
-    if (["-o", "--output", "-f", "--format"].includes(argument)) {
-      index += 1;
-      continue;
-    }
-    if (argument === "--" || /^(?:-o.+|--output=.+|-f.+|--format=.+|-[ahlpv]+)$/u.test(argument)) continue;
-    if (argument.startsWith("-")) return undefined;
-    return advance(invocation, index);
-  }
-  return undefined;
-};
-
-const sudoTarget = (invocation: CommandInvocation): CommandInvocation | undefined => {
-  const optionsWithValues = new Set([
-    "-C", "-D", "-g", "-h", "-p", "-r", "-t", "-u",
-    "--chdir", "--close-from", "--group", "--host", "--prompt", "--role", "--type", "--user",
-  ]);
-  for (let index = 0; index < invocation.arguments.length; index += 1) {
-    const argument = invocation.arguments[index] ?? "";
-    if (argument === "--") return advance(invocation, index + 1);
-    if (optionsWithValues.has(argument)) {
-      index += 1;
-      continue;
-    }
-    if (argument.startsWith("--") && argument.includes("=")) continue;
-    if (argument.startsWith("-")) continue;
-    return advance(invocation, index);
-  }
-  return undefined;
+const advance = (invocation: CommandInvocation, options: WrapperTarget): CommandInvocation | undefined => {
+  const executable = invocation.argumentWords[options.index];
+  if (!executable) return undefined;
+  const words = invocation.argumentWords.slice(options.index + 1);
+  return withTerminalEligibility({
+    ...invocation,
+    commandName: executable.value,
+    arguments: words.map((word) => word.value),
+    rawArguments: words.map((word) => word.raw),
+    argumentWords: words,
+    effectiveExecutable: executable,
+    targetKind: options.targetKind,
+    executionCwd: options.executionCwd,
+    assignments: [...invocation.assignments, ...(options.envAssignments ?? [])],
+    wrapperChain: [
+      ...invocation.wrapperChain,
+      {
+        executable: invocation.effectiveExecutable,
+        arguments: invocation.argumentWords.slice(0, options.index),
+        executionCwd: invocation.executionCwd,
+      },
+    ],
+    argumentOffset: invocation.argumentOffset + options.index + 1,
+    reviewReasons: options.reason ? [...invocation.reviewReasons, options.reason] : invocation.reviewReasons,
+  });
 };
 
 export const effectiveInvocation = (initial: CommandInvocation): CommandInvocation => {
   let invocation = initial;
-  for (let depth = 0; depth < 8; depth += 1) {
-    const name = commandBasename(invocation);
-    const target = name === "command"
-      ? commandTarget(invocation)
-      : name === "exec"
-        ? execTarget(invocation)
-        : name === "env"
-          ? envTarget(invocation)
-          : name === "time"
-            ? timeTarget(invocation)
-            : name === "builtin" || name === "busybox"
-              ? firstArgumentTarget(invocation, `${name} dispatch requires review`)
-              : name === "sudo"
-                ? sudoTarget(invocation)
-              : name === "nice" || name === "nohup"
-                ? firstArgumentTarget(invocation)
-                : undefined;
-    if (!target) return invocation;
-    invocation = target;
+  while (true) {
+    const target = wrapperTarget(invocation);
+    if (!target) {
+      if (isTerminalWrapperForm(invocation)) return withTerminalEligibility(invocation);
+      if (!isRecognizedWrapper(invocation)) return withTerminalEligibility(invocation);
+      return withTerminalEligibility({
+        ...invocation,
+        reviewReasons: [...invocation.reviewReasons, `${commandBasename(invocation)} wrapper options require review`],
+      });
+    }
+    const advanced = advance(invocation, target);
+    if (!advanced) {
+      return withTerminalEligibility({
+        ...invocation,
+        reviewReasons: [...invocation.reviewReasons, `${commandBasename(invocation)} wrapper target requires review`],
+      });
+    }
+    invocation = advanced;
   }
-  return { ...invocation, reviewReasons: [...invocation.reviewReasons, "wrapper nesting limit exceeded"] };
 };

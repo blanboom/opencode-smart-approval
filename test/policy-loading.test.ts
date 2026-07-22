@@ -13,138 +13,131 @@ import {
 } from "./policy-test-helpers";
 
 describe("policy loading", () => {
-  test("initializes missing global config and returns defaults", () => {
+  test("initializes only a strict JSONC v3 global config and returns defaults", () => {
+    // Given a missing trusted global policy.
     const directory = tempDir();
+
+    // When the loader initializes it.
     const result = withXdg(() => {
       const globalPath = join(xdgConfigHome(), "opencode", POLICY_FILE_NAME);
       const loaded = loadOrInitializePolicy(directory);
-      const configFile = existsSync(globalPath) ? readFileSync(globalPath, "utf8") : "";
       return {
         loaded,
         fileExists: existsSync(globalPath),
         localExists: existsSync(join(directory, POLICY_FILE_NAME)),
-        configFile,
+        configFile: readFileSync(globalPath, "utf8"),
       };
     });
+
+    // Then the generated document and runtime defaults are v3-only.
     expect(result.loaded.ok).toBe(true);
     expect(result.loaded.initialized).toBe(true);
-    expect(result.loaded.policy.review.baseURL).toBe("https://api.example.com/v1");
-    expect(result.loaded.policy.review.apiKey).toBe("your-api-key");
-    expect(result.loaded.policy.review.model).toBe("your-model-name");
-    expect(result.loaded.policy.review.maxRetries).toBe(3);
+    expect(result.loaded.policy.review).toEqual({ timeoutMs: 45_000, contextMessages: 20, cleanupSession: true });
     expect(result.fileExists).toBe(true);
     expect(result.localExists).toBe(false);
     expect(result.configFile).toContain("// CommandApproval config");
-    expect(result.configFile).not.toContain('"id"');
-    expect(JSON.parse(stripJsonComments(result.configFile))).toMatchObject({
+    expect(JSON.parse(stripJsonComments(result.configFile))).toEqual({
+      version: 3,
       allow_local_config: false,
       self_protection: { enabled: true },
-      review: { max_retries: 3 },
-      tirith: { enabled: true },
-      rules: { allow: expect.any(Array), deny: expect.any(Array) },
+      review: {},
+      tirith: { enabled: true, timeout_ms: 5_000, fail_open: false },
+      rules: { deny: [], review: [], allow: [] },
     });
   });
 
-  test("loads global config when no local override exists", () => {
+  test("loads a global v3 model and review options", () => {
+    // Given a complete strict global review object.
     const directory = tempDir();
+
+    // When it is loaded.
     const loaded = withXdg(() => {
-      writeGlobalPolicy(
-        policyFixture(
-          reviewFixture({
-            base_url: "https://global.example.com/v1",
-            api_key: "global-key",
-            model: "global-model",
-          }),
-        ),
-      );
+      writeGlobalPolicy(policyFixture(reviewFixture({
+        model: "global-provider/family/reviewer",
+        context_messages: 0,
+        cleanup_session: false,
+        prompt: "global guidance",
+      })));
       return loadOrInitializePolicy(directory);
     });
+
+    // Then the exact validated settings reach runtime form.
     expect(loaded.ok).toBe(true);
-    expect(loaded.policy.review.baseURL).toBe("https://global.example.com/v1");
-    expect(loaded.policy.review.apiKey).toBe("global-key");
-    expect(loaded.policy.review.model).toBe("global-model");
+    expect(loaded.policy.review).toEqual({
+      model: "global-provider/family/reviewer",
+      timeoutMs: 45_000,
+      contextMessages: 0,
+      prompt: "global guidance",
+      cleanupSession: false,
+    });
   });
 
-  test("loads explicit reviewer endpoint, key, and model from local override", () => {
+  test("loads a strict local override only after trusted opt-in", () => {
+    // Given a local v3 model and a trusted global delegation.
     const directory = tempDir();
-    writeLocalPolicy(directory, policyFixture());
+    writeLocalPolicy(directory, policyFixture(reviewFixture({ model: "local-provider/local-model" })));
+
+    // When the delegated file is loaded.
     const loaded = withXdg(() => {
       writeGlobalPolicy({ allow_local_config: true });
       return loadOrInitializePolicy(directory);
     });
+
+    // Then the local policy replaces the global policy.
     expect(loaded.ok).toBe(true);
-    expect(loaded.policy.review.baseURL).toBe("https://example.com/v1");
-    expect(loaded.policy.review.apiKey).toBe("test-key");
-    expect(loaded.policy.review.model).toBe("test-model");
+    expect(loaded.path).toBe(join(directory, POLICY_FILE_NAME));
+    expect(loaded.policy.review.model).toBe("local-provider/local-model");
   });
 
-  test("loads optional risk tool config from global", () => {
+  test("loads preserved Tirith configuration and strict deny/allow rules", () => {
+    // Given strict preserved v3 policy fields.
     const directory = tempDir();
+
+    // When they are loaded.
     const loaded = withXdg(() => {
       writeGlobalPolicy({
         tirith: { enabled: true, path: "/opt/internal/bin/tirith", timeout_ms: 3_000, fail_open: true },
-        rules: { block: ["^false$"], allow: ["^echo ok$"] },
+        rules: { deny: [{ match: "^false$" }], allow: [{ match: "^echo ok$" }] },
       });
       return loadOrInitializePolicy(directory);
     });
+
+    // Then the runtime configuration and rule labels are canonical.
     expect(loaded.ok).toBe(true);
-    expect(loaded.policy.riskTool).toEqual({
+    expect(loaded.policy.tirith).toEqual({
       enabled: true,
       path: "/opt/internal/bin/tirith",
       timeoutMs: 3_000,
       failOpen: true,
     });
+    expect(loaded.policy.rules.slice(0, 2).map((rule) => rule.label)).toEqual(["deny[0]", "allow[0]"]);
   });
 
-  test("loads command approval JSON with comments from local override", () => {
+  test("loads strict JSONC object rules with optional reason", () => {
+    // Given a commented local v3 document.
     const directory = tempDir();
-    writeLocalPolicy(
-      directory,
-      `// local override
+    writeLocalPolicy(directory, `// local override
 {
-  "review": {
-    "base_url": "https://example.com/v1",
-    "api_key": "test-key",
-    "model": "test-model",
-    "timeout_ms": 45000,
-    "max_script_bytes": 20000
-  },
+  "version": 3,
+  "review": {},
   "rules": {
-    "block": [{ "match": "^false$", "reason": "test denial" }],
-    "allow": []
-  }
-}
-`,
-    );
-    const loaded = withXdg(() => {
-      writeGlobalPolicy({ allow_local_config: true });
-      return loadOrInitializePolicy(directory);
-    });
-    expect(loaded.ok).toBe(true);
-    expect(loaded.policy.rules[0]?.label).toBe("block[0]");
-    expect(loaded.policy.rules[0]?.reason).toBe("test denial");
-  });
-
-  test("loads compact string rules and object rules without reason from local", () => {
-    const directory = tempDir();
-    writeLocalPolicy(
-      directory,
-      `{
-  "rules": {
-    "block": ["^false$"],
+    "deny": [{ "match": "^false$", "reason": "test denial" }],
     "allow": [{ "match": "^echo\\\\s+ok$" }]
   }
 }
-`,
-    );
+`);
+
+    // When trusted delegation loads it.
     const loaded = withXdg(() => {
       writeGlobalPolicy({ allow_local_config: true });
       return loadOrInitializePolicy(directory);
     });
+
+    // Then object-only rules compile with exact reason semantics.
     expect(loaded.ok).toBe(true);
-    expect(loaded.policy.rules.map((rule) => ({ decision: rule.decision, label: rule.label, reason: rule.reason })).slice(0, 2)).toEqual([
-      { decision: "block", label: "block[0]", reason: undefined },
-      { decision: "allow", label: "allow[0]", reason: undefined },
+    expect(loaded.policy.rules.slice(0, 2).map((rule) => ({ label: rule.label, reason: rule.reason }))).toEqual([
+      { label: "deny[0]", reason: "test denial" },
+      { label: "allow[0]", reason: undefined },
     ]);
   });
 });

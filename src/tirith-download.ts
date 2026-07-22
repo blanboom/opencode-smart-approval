@@ -1,10 +1,17 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { extractBinaryFromTarGz, extractBinaryFromZip } from "./archive";
 import { downloadUrl } from "./bounded-download";
+import {
+  readVerifiedCacheMetadata,
+  sha256Buffer,
+  staleVerifiedTirithResult,
+  writeTirithCacheMetadata,
+  type TirithCacheMetadata,
+} from "./tirith-cache";
 import { tirithTargetForPlatform, type TirithTarget } from "./tirith-target";
 import type { RuntimePlatform, TirithDownloadClient, TirithRelease, TirithReleaseAsset } from "./types";
 
@@ -28,17 +35,6 @@ const GITHUB_RELEASE_SCHEMA = z.object({
 
 const GITHUB_RELEASES_SCHEMA = z.array(GITHUB_RELEASE_SCHEMA);
 
-const CACHE_METADATA_SCHEMA = z.object({
-  version: z.literal(1),
-  tagName: z.string().startsWith("v"),
-  assetName: z.string().min(1),
-  archiveSha256: z.string().regex(/^[a-f0-9]{64}$/u),
-  binarySha256: z.string().regex(/^[a-f0-9]{64}$/u),
-  checkedAt: z.number().int().nonnegative(),
-});
-
-type CacheMetadata = z.infer<typeof CACHE_METADATA_SCHEMA>;
-
 const PROCESS_REPORT_SCHEMA = z
   .object({
     header: z
@@ -59,6 +55,7 @@ export type TirithBinaryResult =
   | {
       readonly kind: "ready";
       readonly path: string;
+      readonly freshness: "current" | "stale_verified";
     }
   | {
       readonly kind: "skipped";
@@ -84,20 +81,6 @@ const defaultCacheRoot = (): string => {
   return process.platform === "darwin"
     ? join(homedir(), "Library", "Caches", "opencode-smart-approval", "tirith")
     : join(homedir(), ".cache", "opencode-smart-approval", "tirith");
-};
-
-const sha256 = (value: Buffer): string => createHash("sha256").update(value).digest("hex");
-
-const cachedMetadata = (binaryPath: string, metadataPath: string): CacheMetadata | undefined => {
-  if (!existsSync(binaryPath) || !existsSync(metadataPath)) return undefined;
-  try {
-    const parsed = CACHE_METADATA_SCHEMA.safeParse(JSON.parse(readFileSync(metadataPath, "utf8")));
-    if (!parsed.success || sha256(readFileSync(binaryPath)) !== parsed.data.binarySha256) return undefined;
-    return parsed.data;
-  } catch (error) {
-    if (error instanceof Error) return undefined;
-    throw error;
-  }
 };
 
 const currentLinuxLibc = (): "glibc" | "musl" => {
@@ -155,17 +138,6 @@ const requireSize = (value: Buffer, maximum: number, label: string): void => {
   if (value.length > maximum) throw new Error(`${label} exceeds the ${String(maximum)} byte limit`);
 };
 
-const writeMetadata = (metadataPath: string, metadata: CacheMetadata): void => {
-  const tempPath = `${metadataPath}.${randomUUID()}.download`;
-  try {
-    writeFileSync(tempPath, `${JSON.stringify(metadata)}\n`, { mode: 0o600, flag: "wx" });
-    if (existsSync(metadataPath)) unlinkSync(metadataPath);
-    renameSync(tempPath, metadataPath);
-  } finally {
-    if (existsSync(tempPath)) unlinkSync(tempPath);
-  }
-};
-
 const extractBinary = (archive: Buffer, target: TirithTarget): Buffer => {
   switch (target.archiveType) {
     case "tar.gz":
@@ -185,25 +157,45 @@ export const ensureTirithBinary = async (options: TirithInstallOptions = {}): Pr
   const installDir = join(cacheRoot, target.cacheKey);
   const binaryPath = join(installDir, target.binaryName);
   const metadataPath = `${binaryPath}.metadata.json`;
-  const cached = cachedMetadata(binaryPath, metadataPath);
+  const cached = readVerifiedCacheMetadata(binaryPath, metadataPath);
   const now = Date.now();
   const maxAge = Math.max(0, options.cacheMaxAgeMs ?? DEFAULT_CACHE_MAX_AGE_MS);
   const cacheAge = cached ? now - cached.checkedAt : Number.POSITIVE_INFINITY;
   if (cached && cached.assetName === target.assetName && cacheAge >= 0 && cacheAge < maxAge) {
-    return { kind: "ready", path: binaryPath };
+    return { kind: "ready", path: binaryPath, freshness: "current" };
   }
   const client = options.client ?? githubClient;
-  const selected = selectTirithAsset(await client.listReleases(), target);
+  let releases: readonly TirithRelease[];
+  try {
+    releases = await client.listReleases();
+  } catch (error) {
+    if (error instanceof z.ZodError || error instanceof SyntaxError) throw error;
+    const stale = staleVerifiedTirithResult({ cached, binaryPath, metadataPath, target });
+    if (stale) return stale;
+    throw error;
+  }
+  const selected = selectTirithAsset(releases, target);
   if (!selected) {
     return { kind: "skipped", reason: `no Tirith release asset for ${target.assetName}` };
   }
-  const checksums = await client.download(selected.checksums.downloadUrl, MAX_CHECKSUMS_BYTES);
+  let checksums: Buffer;
+  try {
+    checksums = await client.download(selected.checksums.downloadUrl, MAX_CHECKSUMS_BYTES);
+  } catch (error) {
+    if (error instanceof z.ZodError || error instanceof SyntaxError) throw error;
+    const upstreamMatchesCache = cached?.tagName === selected.tagName;
+    const stale = upstreamMatchesCache
+      ? staleVerifiedTirithResult({ cached, binaryPath, metadataPath, target })
+      : undefined;
+    if (stale) return stale;
+    throw error;
+  }
   requireSize(checksums, MAX_CHECKSUMS_BYTES, "Tirith checksum manifest");
   const archiveSha256 = expectedChecksum(checksums.toString("utf8"), target.assetName);
   if (!archiveSha256) throw new Error(`checksum not found for ${target.assetName}`);
   if (cached && cached.assetName === target.assetName && cached.tagName === selected.tagName && cached.archiveSha256 === archiveSha256) {
-    writeMetadata(metadataPath, { ...cached, checkedAt: now });
-    return { kind: "ready", path: binaryPath };
+    writeTirithCacheMetadata(metadataPath, { ...cached, checkedAt: now });
+    return { kind: "ready", path: binaryPath, freshness: "current" };
   }
   const archive = await client.download(selected.binary.downloadUrl, MAX_TIRITH_ARCHIVE_BYTES);
   requireSize(archive, MAX_TIRITH_ARCHIVE_BYTES, "Tirith archive");
@@ -213,12 +205,12 @@ export const ensureTirithBinary = async (options: TirithInstallOptions = {}): Pr
   const nonce = randomUUID();
   const tempPath = join(installDir, `${target.binaryName}.${nonce}.download`);
   const tempMetadataPath = `${tempPath}.metadata.json`;
-  const metadata: CacheMetadata = {
+  const metadata: TirithCacheMetadata = {
     version: 1,
     tagName: selected.tagName,
     assetName: target.assetName,
     archiveSha256,
-    binarySha256: sha256(binary),
+    binarySha256: sha256Buffer(binary),
     checkedAt: now,
   };
   try {
@@ -233,5 +225,5 @@ export const ensureTirithBinary = async (options: TirithInstallOptions = {}): Pr
     if (existsSync(tempPath)) unlinkSync(tempPath);
     if (existsSync(tempMetadataPath)) unlinkSync(tempMetadataPath);
   }
-  return { kind: "ready", path: binaryPath };
+  return { kind: "ready", path: binaryPath, freshness: "current" };
 };

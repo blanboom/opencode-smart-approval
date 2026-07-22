@@ -1,121 +1,25 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
-import { createHook } from "../src/index";
-
-type RuleLists = {
-  readonly allow?: readonly unknown[];
-  readonly deny?: readonly unknown[];
-  readonly review?: readonly unknown[];
-};
-
-type PipelineFixture = {
-  readonly hook: ReturnType<typeof createHook>;
-  readonly scans: () => readonly string[];
-  readonly reviewCount: () => number;
-  readonly reviewerObservedScan: () => boolean;
-  readonly cleanup: () => void;
-};
-
-const pipelineFixture = (rules: RuleLists): PipelineFixture => {
-  const root = mkdtempSync(join(tmpdir(), "approval-pipeline-"));
-  const xdg = join(root, "xdg");
-  const directory = join(root, "project");
-  const configDirectory = join(xdg, "opencode");
-  const capturePath = join(root, "scans.txt");
-  const tirithPath = join(root, "fake-tirith");
-  mkdirSync(configDirectory, { recursive: true });
-  mkdirSync(directory, { recursive: true });
-  writeFileSync(tirithPath, [
-    "#!/bin/sh",
-    "for argument do command=$argument; done",
-    `printf '%s\\n' "$command" >> '${capturePath}'`,
-    "printf '%s\\n' '{\"summary\":\"fake scan\",\"findings\":[]}'",
-    "case $command in",
-    "  *scanner-block*) exit 1 ;;",
-    "  *) exit 0 ;;",
-    "esac",
-  ].join("\n"));
-  chmodSync(tirithPath, 0o755);
-
-  let reviews = 0;
-  let scanObserved = false;
-  const reviewer = Bun.serve({
-    port: 0,
-    fetch: () => {
-      reviews += 1;
-      scanObserved = existsSync(capturePath) && readFileSync(capturePath, "utf8").trim().length > 0;
-      return Response.json({
-        choices: [{
-          message: {
-            role: "assistant",
-            content: JSON.stringify({
-              outcome: "allow",
-              risk_level: "medium",
-              user_authorization: "unknown",
-              categories: [{ id: "security.test", score: 0.2 }],
-              reasons: ["fake reviewer approval"],
-            }),
-          },
-          finish_reason: "stop",
-          index: 0,
-        }],
-        created: 0,
-        id: "fake-review",
-        model: "fake-model",
-        object: "chat.completion",
-        usage: { completion_tokens: 1, prompt_tokens: 1, total_tokens: 2 },
-      });
-    },
-  });
-
-  writeFileSync(join(configDirectory, "command-approval.jsonc"), JSON.stringify({
-    version: 2,
-    self_protection: { enabled: true },
-    review: {
-      base_url: `${reviewer.url.origin}/v1`,
-      api_key: "test-key",
-      model: "fake-model",
-      max_retries: 0,
-      context_messages: 0,
-    },
-    tirith: { enabled: true, path: tirithPath, timeout_ms: 5_000, fail_open: false },
-    rules: {
-      allow: rules.allow ?? [],
-      deny: rules.deny ?? [],
-      block: [],
-      review: rules.review ?? [],
-    },
-  }));
-
-  const previousXdg = process.env["XDG_CONFIG_HOME"];
-  process.env["XDG_CONFIG_HOME"] = xdg;
-  const hook = createHook(directory);
-  if (previousXdg === undefined) delete process.env["XDG_CONFIG_HOME"];
-  else process.env["XDG_CONFIG_HOME"] = previousXdg;
-
-  return {
-    hook,
-    scans: () => existsSync(capturePath)
-      ? readFileSync(capturePath, "utf8").trim().split("\n").filter(Boolean)
-      : [],
-    reviewCount: () => reviews,
-    reviewerObservedScan: () => scanObserved,
-    cleanup: () => {
-      reviewer.stop(true);
-      rmSync(root, { recursive: true, force: true });
-    },
-  };
-};
-
-const runCommand = (fixture: PipelineFixture, command: string): Promise<void> => fixture.hook(
-  { tool: "bash", sessionID: "pipeline", callID: "pipeline-call" },
-  { args: { command } },
-);
+import { pipelineFixture, runCommand } from "./fixtures/decision-pipeline-fixture";
 
 describe("approval decision pipeline", () => {
-  test("lets a user allow bypass a scanner block and the LLM", async () => {
+  test.each([
+    ["enabled by default", undefined, 1],
+    ["disabled by policy", false, 0],
+  ] as const)("keeps review session cleanup %s", async (_label, cleanupSession, expectedCleanups) => {
+    // Given a v3 cleanup policy and one command requiring review.
+    const fixture = pipelineFixture({ ...(cleanupSession === undefined ? {} : { cleanupSession }) });
+    try {
+      // When the reviewer completes successfully.
+      await expect(runCommand(fixture, "scanner-allow")).resolves.toBeUndefined();
+
+      // Then the policy choice controls normal child-session deletion.
+      expect(fixture.cleanupCount()).toBe(expectedCleanups);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("lets a user allow bypass a scanner block and the OpenCode reviewer", async () => {
     // Given an explicit user allow for a command the scanner would block.
     const fixture = pipelineFixture({
       allow: [{ match: "^scanner-block(?:\\s|$).*", scope: "segment", priority: 100 }],
@@ -133,7 +37,7 @@ describe("approval decision pipeline", () => {
     }
   });
 
-  test("lets a user deny bypass the scanner and LLM", async () => {
+  test("lets a user deny bypass the scanner and OpenCode reviewer", async () => {
     // Given an explicit user deny rule.
     const fixture = pipelineFixture({
       deny: [{ match: "^scanner-allow(?:\\s|$).*", scope: "segment", priority: 100 }],
@@ -154,12 +58,12 @@ describe("approval decision pipeline", () => {
     }
   });
 
-  test("lets a builtin low-risk allow bypass the scanner and LLM", async () => {
-    // Given no matching user rule and a common builtin command.
+  test("lets a constrained non-output builtin allow bypass the scanner and OpenCode reviewer", async () => {
+    // Given no matching user rule and a constrained shell predicate.
     const fixture = pipelineFixture({});
     try {
       // When the builtin command is evaluated.
-      const action = runCommand(fixture, "echo ok");
+      const action = runCommand(fixture, "test -n value");
 
       // Then the builtin stage is terminal.
       await expect(action).resolves.toBeUndefined();
@@ -170,14 +74,76 @@ describe("approval decision pipeline", () => {
     }
   });
 
-  test("runs the scanner before the LLM when deterministic rules do not match", async () => {
+  test("routes output-capable commands through Tirith and the reviewer", async () => {
+    // Given output commands spanning plain, escaped, dynamic, path, and wrapper forms.
+    const fixture = pipelineFixture({});
+    const commands = [
+      "echo harmless",
+      String.raw`echo -e '\033]52;c;Y2xpcGJvYXJk\a'`,
+      "printf '%s' harmless",
+      String.raw`printf '%b' '\033]8;;https://example.invalid\033\\label\033]8;;\033\\'`,
+      `printf '\u001B]52;c;Y2xpcGJvYXJk\u0007'`,
+      'echo "$(id)"',
+      "printf '%s' \"$HOME\"",
+      "echo '",
+      String.raw`printf '%b' '\x'`,
+      'echo "$(',
+      "/bin/echo harmless",
+      "/usr/bin/printf '%s' harmless",
+      "command echo harmless",
+      "builtin printf '%s' harmless",
+      "env /usr/bin/printf '%s' harmless",
+      "busybox echo harmless",
+    ];
+    try {
+      // When the exported hook evaluates source text without executing any analyzed command.
+      await Promise.all(commands.map((command) => runCommand(fixture, command)));
+
+      // Then every command is scanned and reviewed instead of terminal-allowed.
+      expect([...fixture.scans()].sort()).toEqual([...commands].sort());
+      expect(fixture.reviewCount()).toBe(commands.length);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("routes modified executable identity through scanner and reviewer", async () => {
+    // Given commands that previously inherited the effective ls builtin allow.
+    const fixture = pipelineFixture({});
+    const commands = [
+      "PATH=./untrusted ls",
+      "env PATH=./untrusted ls",
+      "LD_PRELOAD=./evil.so /bin/ls",
+      "command ls",
+      "exec ls",
+      "env ls",
+      "nice -n 5 ls",
+      "nohup ls",
+      "time -o /tmp/time.log ls",
+      "builtin ls",
+      "busybox ls",
+      "sudo ls",
+    ];
+    try {
+      // When the real hook evaluates each modified invocation.
+      await Promise.all(commands.map((command) => runCommand(fixture, command)));
+
+      // Then none terminal-allow before the scanner and reviewer stages.
+      expect([...fixture.scans()].sort()).toEqual([...commands].sort());
+      expect(fixture.reviewCount()).toBe(commands.length);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("runs the scanner before the OpenCode reviewer when deterministic rules do not match", async () => {
     // Given a command outside both deterministic rule stages.
     const fixture = pipelineFixture({});
     try {
       // When the scanner allows it and contextual judgment is still needed.
       const action = runCommand(fixture, "scanner-allow");
 
-      // Then scanner evidence exists before the only LLM call.
+      // Then scanner evidence exists before the only OpenCode reviewer call.
       await expect(action).resolves.toBeUndefined();
       expect(fixture.scans()).toEqual(["scanner-allow"]);
       expect(fixture.reviewCount()).toBe(1);
@@ -196,7 +162,7 @@ describe("approval decision pipeline", () => {
       // When the right side remains unmatched.
       const action = runCommand(fixture, "trusted-left | scanner-allow");
 
-      // Then the complete raw pipeline still reaches scanner and LLM.
+      // Then the complete raw pipeline still reaches scanner and OpenCode reviewer.
       await expect(action).resolves.toBeUndefined();
       expect(fixture.scans()).toEqual(["trusted-left | scanner-allow"]);
       expect(fixture.reviewCount()).toBe(1);

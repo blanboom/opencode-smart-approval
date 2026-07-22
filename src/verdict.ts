@@ -1,20 +1,26 @@
 import type { ApprovalVerdict, ReviewResponse, RuleEvaluation } from "./types";
+import { renderCommandApprovalError } from "./user-facing";
+export { isCommandApprovalError } from "./user-facing";
+export type { CommandApprovalError } from "./user-facing";
 
-export class CommandApprovalError extends Error {
-  constructor(
-    readonly tool: string,
-    readonly verdict: ApprovalVerdict,
-  ) {
-    super(`[CommandApproval] blocked ${tool}: ${verdict.reasons.join("; ") || verdict.source}`);
-    this.name = "CommandApprovalError";
+class VerdictRenderInvariantError extends Error {
+  readonly name = "VerdictRenderInvariantError";
+  constructor() {
+    super("ordinary approval error rendering failed");
   }
 }
+
+const assertNever = (value: never): never => {
+  void value;
+  throw new VerdictRenderInvariantError();
+};
 
 export const verdictFromRules = (evaluation: RuleEvaluation): ApprovalVerdict | undefined => {
   if (evaluation.decision === "review") return undefined;
   return {
     decision: evaluation.decision === "allow" ? "allow" : "block",
     source: "rule",
+    reasonSource: "rule",
     riskLevel: evaluation.decision === "allow" ? "low" : "critical",
     userAuthorization: "unknown",
     categories: evaluation.categories,
@@ -26,9 +32,13 @@ export const verdictFromRules = (evaluation: RuleEvaluation): ApprovalVerdict | 
 export const verdictFromReview = (review: ReviewResponse, evaluation: RuleEvaluation): ApprovalVerdict => {
   return {
     decision: review.outcome === "allow" ? "allow" : "block",
-    source: review.categories.some((category) => category.id === "security.reviewer_unavailable")
+    source: review.categories.some((category) =>
+      category.id === "security.reviewer_unavailable" || category.id === "security.reviewer_lifecycle")
       ? "fail_closed"
       : "review",
+    reasonSource: review.categories.some((category) => category.id === "security.reviewer_lifecycle")
+      ? "lifecycle"
+      : "reviewer",
     riskLevel: review.riskLevel,
     userAuthorization: review.userAuthorization,
     categories: review.categories,
@@ -39,5 +49,13 @@ export const verdictFromReview = (review: ReviewResponse, evaluation: RuleEvalua
 
 export const enforceVerdict = (tool: string, verdict: ApprovalVerdict): void => {
   if (verdict.decision === "allow") return;
-  throw new CommandApprovalError(tool, verdict);
+  const rendered = renderCommandApprovalError({ kind: "ordinary", tool, verdict });
+  switch (rendered.kind) {
+    case "error":
+      throw rendered.error;
+    case "confirmation_failure":
+      throw new VerdictRenderInvariantError();
+    default:
+      return assertNever(rendered);
+  }
 };

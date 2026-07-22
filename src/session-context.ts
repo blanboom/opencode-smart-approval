@@ -1,63 +1,105 @@
-import type { PluginInput } from "@opencode-ai/plugin";
+import { SessionMessagesResultSchema } from "./transcript-schema";
+import {
+  copyBoundedTranscriptJson,
+  projectCopiedTranscriptEnvelope,
+} from "./transcript-projector";
+import {
+  emptyTranscriptSnapshot,
+  type TranscriptFetchInput,
+  type TranscriptSnapshot,
+} from "./transcript-types";
+import type { OpenCodeClientAdapter } from "./opencode-client-adapter";
 
-type SessionClient = PluginInput["client"];
+export type {
+  AuthorizationEntry,
+  AuthorizationMessage,
+  AuthorizationSnapshot,
+  ReviewerTranscript,
+  ReviewerTranscriptMessage,
+  ReviewerTranscriptPart,
+  TranscriptFetchInput,
+  TranscriptSnapshot,
+  TranscriptUnavailableReason,
+} from "./transcript-types";
+export {
+  MAX_TRANSCRIPT_ENVELOPE_UTF8_BYTES,
+  MAX_TRANSCRIPT_PARTS_PER_MESSAGE,
+  MAX_TRANSCRIPT_TEXT_CHARS_PER_PART,
+  MAX_TRANSCRIPT_TOOL_NAME_CHARS,
+  MAX_TRANSCRIPT_TOTAL_CHARS,
+  MAX_TRANSCRIPT_TOTAL_PARTS,
+} from "./transcript-types";
+export {
+  projectAuthorizationEnvelope,
+  projectTranscriptEnvelope,
+  redactReviewerTranscript,
+  type TranscriptProjectionInput,
+} from "./transcript-projector";
 
-const MAX_TEXT_CHARS = 2000;
-const MAX_TRANSCRIPT_CHARS = 20000;
+const disabled = (): TranscriptSnapshot => emptyTranscriptSnapshot({ status: "disabled" });
+const unavailable = (reason: "timeout" | "sdk_error" | "malformed" | "limit_exceeded"): TranscriptSnapshot =>
+  emptyTranscriptSnapshot({ status: "unavailable", reason });
 
-const truncate = (text: string, max: number): string => {
-  return text.length > max ? text.slice(0, max) + "..." : text;
-};
+export const fetchSessionContext = async (input: TranscriptFetchInput): Promise<TranscriptSnapshot> => {
+  if (!input.client || input.limit <= 0) return disabled();
+  if (!Number.isSafeInteger(input.limit)) return unavailable("limit_exceeded");
+  if (input.signal.aborted) return unavailable("timeout");
 
-const extractTextFromParts = (parts: unknown[]): string => {
-  const texts: string[] = [];
-  for (const part of parts) {
-    if (!part || typeof part !== "object") continue;
-    const p = part as Record<string, unknown>;
-    if (p["type"] === "text" && typeof p["text"] === "string") {
-      texts.push(truncate(p["text"] as string, MAX_TEXT_CHARS));
-    } else if (p["type"] === "tool") {
-      const tool = p["tool"] as string | undefined;
-      const state = p["state"] as string | undefined;
-      texts.push(`[tool: ${tool ?? "unknown"} (${state ?? "unknown"})]`);
-    }
-  }
-  return texts.join("\n");
-};
-
-export const fetchSessionContext = async (
-  client: SessionClient | undefined,
-  sessionID: string,
-  maxMessages: number,
-): Promise<string> => {
-  if (!client || maxMessages <= 0) return "";
-
+  let response: unknown;
   try {
-    const response = await client.session.messages({
-      path: { id: sessionID },
-      query: { limit: maxMessages },
+    response = await input.client.session.messages({
+      path: { id: input.parentSessionID },
+      query: { directory: input.canonicalDirectory, limit: input.limit },
+      signal: input.signal,
     });
-
-    if (!response.data || !Array.isArray(response.data)) return "";
-
-    const entries: string[] = [];
-    for (const entry of response.data) {
-      if (!entry || typeof entry !== "object") continue;
-      const e = entry as Record<string, unknown>;
-      const info = e["info"] as Record<string, unknown> | undefined;
-      const parts = e["parts"];
-      if (!info || !Array.isArray(parts)) continue;
-
-      const role = info["role"] as string | undefined;
-      const text = extractTextFromParts(parts as unknown[]);
-      if (text.length === 0) continue;
-
-      entries.push(`[${role ?? "unknown"}] ${text}`);
+  } catch (error) {
+    if (input.signal.aborted || (error instanceof Error && error.name === "TimeoutError")) {
+      return unavailable("timeout");
     }
-
-    const transcript = entries.join("\n---\n");
-    return truncate(transcript, MAX_TRANSCRIPT_CHARS);
-  } catch {
-    return "";
+    if (error instanceof Error) return unavailable("sdk_error");
+    return unavailable("sdk_error");
   }
+
+  const copied = copyBoundedTranscriptJson(response);
+  if (!copied.ok) return unavailable(copied.reason);
+  const result = SessionMessagesResultSchema.safeParse(copied.value);
+  if (!result.success) return unavailable("malformed");
+  if (result.data.error !== undefined) return unavailable("sdk_error");
+  if (result.data.data === undefined) return unavailable("malformed");
+  return projectCopiedTranscriptEnvelope({
+    data: result.data.data,
+    parentSessionID: input.parentSessionID,
+    canonicalDirectory: input.canonicalDirectory,
+    limit: input.limit,
+  });
+};
+
+export type AdapterTranscriptFetchInput = Omit<TranscriptFetchInput, "client"> & {
+  readonly adapter: Pick<OpenCodeClientAdapter, "messages"> | undefined;
+};
+
+export const fetchSessionContextWithAdapter = async (
+  input: AdapterTranscriptFetchInput,
+): Promise<TranscriptSnapshot> => {
+  if (!input.adapter || input.limit <= 0) return disabled();
+  if (!Number.isSafeInteger(input.limit)) return unavailable("limit_exceeded");
+  if (input.signal.aborted) return unavailable("timeout");
+  const result = await input.adapter.messages({
+    sessionID: input.parentSessionID,
+    directory: input.canonicalDirectory,
+    limit: input.limit,
+    signal: input.signal,
+  });
+  if (!result.ok) {
+    if (input.signal.aborted) return unavailable("timeout");
+    if (result.code === "limit_exceeded") return unavailable("limit_exceeded");
+    if (result.code === "malformed_json") return unavailable("malformed");
+    return unavailable("sdk_error");
+  }
+  return projectCopiedTranscriptEnvelope({
+    data: result.data,
+    parentSessionID: input.parentSessionID,
+    canonicalDirectory: input.canonicalDirectory,
+    limit: input.limit,
+  });
 };

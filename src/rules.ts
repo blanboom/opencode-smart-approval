@@ -56,8 +56,22 @@ const resolveMatches = (matches: readonly MatchedRule[]): ResolvedMatches => {
 
 const eligibleForSegment = (matches: readonly MatchedRule[], segment: ShellSegment): readonly MatchedRule[] => {
   const hasOutputRedirection = segment.redirections.some((redirection) => !redirection.operator.startsWith("<"));
-  if (!hasOutputRedirection) return matches;
-  return matches.filter((rule) => rule.origin !== "builtin" || rule.decision !== "allow");
+  return matches.filter((rule) => {
+    if (rule.decision === "allow" && rule.scope === "segment" && !segment.terminalAllowEligible) return false;
+    return !hasOutputRedirection || rule.origin !== "builtin" || rule.decision !== "allow";
+  });
+};
+
+const isExactCommandMatch = (rule: MatchedRule, command: string): boolean => {
+  if (!rule.match.startsWith("^") || !rule.match.endsWith("$")) return false;
+  const match = rule.regex.exec(command);
+  return match?.index === 0 && match[0].length === command.length;
+};
+
+const commandMatchEligible = (rule: MatchedRule, command: string, segments: readonly ShellSegment[]): boolean => {
+  if (rule.decision !== "allow") return true;
+  const requiresExactMatch = segments.length !== 1 || segments.some((segment) => !segment.terminalAllowEligible);
+  return !requiresExactMatch || isExactCommandMatch(rule, command);
 };
 
 const strongest = (decisions: readonly EvaluationDecision[]): EvaluationDecision => {
@@ -86,6 +100,8 @@ export const evaluateRulesFromAnalysis = (
     const matched = matchRule(rule, command, index);
     return matched ? [matched] : [];
   });
+  const eligibleCommandMatches = commandMatches.filter((rule) => commandMatchEligible(rule, command, analysis.segments));
+  const hasExactCommandAllow = commandMatches.some((rule) => rule.decision === "allow" && isExactCommandMatch(rule, command));
   const nodeResults: ResolvedMatches[] = [];
 
   if (analysis.segments.length === 1) {
@@ -96,10 +112,11 @@ export const evaluateRulesFromAnalysis = (
         const matched = matchRule(rule, segment.normalizedSource, index, segment);
         return matched ? [matched] : [];
       });
-      nodeResults.push(resolveMatches(eligibleForSegment([...commandMatches, ...segmentMatches], segment)));
+      nodeResults.push(resolveMatches(eligibleForSegment([...eligibleCommandMatches, ...segmentMatches], segment)));
     }
   } else {
-    const commandEscalations = commandMatches.filter((rule) => rule.decision !== "allow");
+    const commandEscalations = eligibleCommandMatches.filter((rule) => rule.decision !== "allow");
+    const exactCommandAllows = eligibleCommandMatches.filter((rule) => rule.decision === "allow");
     if (commandEscalations.length > 0) nodeResults.push(resolveMatches(commandEscalations));
     for (const segment of analysis.segments) {
       const matches = rules.flatMap((rule, index) => {
@@ -107,11 +124,12 @@ export const evaluateRulesFromAnalysis = (
         const matched = matchRule(rule, segment.normalizedSource, index, segment);
         return matched ? [matched] : [];
       });
-      nodeResults.push(resolveMatches(eligibleForSegment(matches, segment)));
+      nodeResults.push(resolveMatches(eligibleForSegment([...exactCommandAllows, ...matches], segment)));
     }
   }
 
-  const issueReasons = analysis.issues.map((entry) => entry.reason);
+  const applicableIssues = analysis.issues.filter((entry) => entry.kind !== "identity" || !hasExactCommandAllow);
+  const issueReasons = applicableIssues.map((entry) => entry.reason);
   const decisions = nodeResults.map((result) => result.decision);
   if (analysis.segments.length === 0 || issueReasons.length > 0) decisions.push("review");
   const decision = strongest(decisions.length > 0 ? decisions : ["review"]);

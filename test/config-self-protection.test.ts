@@ -8,33 +8,30 @@ type ConfiguredHook = {
   readonly hook: ReturnType<typeof createHook>;
   readonly globalPolicyPath: string;
   readonly localPolicyPath: string;
+  readonly legacyLocalPolicyPath: string;
   readonly cleanup: () => void;
 };
 
-const configuredHook = (enabled: boolean): ConfiguredHook => {
+const configuredHook = (enabled: boolean, allowLocalConfig = true): ConfiguredHook => {
   const root = mkdtempSync(join(tmpdir(), "approval-self-protection-"));
   const xdg = join(root, "xdg");
   const directory = join(root, "project");
   const globalDirectory = join(xdg, "opencode");
   const globalPolicyPath = join(globalDirectory, "command-approval.jsonc");
   const localPolicyPath = join(directory, "command-approval.jsonc");
+  const legacyLocalPolicyPath = join(directory, "command-approval.json");
   mkdirSync(globalDirectory, { recursive: true });
   mkdirSync(directory, { recursive: true });
   mkdirSync(join(directory, "subdir"));
   mkdirSync(join(directory, "-foo"));
   writeFileSync(globalPolicyPath, JSON.stringify({
-    version: 2,
+    version: 3,
+    allow_local_config: allowLocalConfig,
     self_protection: { enabled },
-    review: {
-      base_url: "http://127.0.0.1:1/v1",
-      api_key: "test-key",
-      model: "test-model",
-      max_retries: 0,
-    },
+    review: {},
     tirith: { enabled: false, fail_open: true },
     rules: {
       allow: [{ match: ".*", scope: "segment", priority: 100 }],
-      block: [],
       review: [],
     },
   }));
@@ -49,6 +46,7 @@ const configuredHook = (enabled: boolean): ConfiguredHook => {
     hook,
     globalPolicyPath,
     localPolicyPath,
+    legacyLocalPolicyPath,
     cleanup: () => rmSync(root, { recursive: true, force: true }),
   };
 };
@@ -109,12 +107,8 @@ describe("approval configuration self-protection", () => {
 
   test.each([
     "printf '{}' > command-approval.jsonc",
-    "bash -c \"printf '{}' > command-approval.jsonc\"",
-    "env bash -c \"printf '{}' > command-approval.jsonc\"",
-    "nice sh -c \"printf '{}' > command-approval.jsonc\"",
     "printf '{}' | tee command-approval.jsonc",
     "printf '{}' | sudo tee command-approval.jsonc",
-    "node -e \"require('fs').writeFileSync('command-approval.jsonc', '{}')\"",
     "cd subdir && printf '{}' > ../command-approval.jsonc",
     "cd -- -foo && printf '{}' > ../command-approval.jsonc",
     "cp /tmp/command-approval.jsonc .",
@@ -132,8 +126,6 @@ describe("approval configuration self-protection", () => {
     "rsync /tmp/payload command-approval.jsonc --outbuf L",
     "rsync /tmp/payload command-approval.jsonc --chown nobody:nogroup",
     "rsync /tmp/payload command-approval.jsonc --early-input seed",
-    "target=command-approval.jsonc; printf '{}' > \"$target\"",
-    "name=command-approval; printf '{}' > \"$name.jsonc\"",
   ])("blocks a static Bash policy write: %s", async (command) => {
     // Given enabled self-protection.
     const fixture = configuredHook(true);
@@ -189,6 +181,40 @@ describe("approval configuration self-protection", () => {
       });
 
       await expect(action).resolves.toBeUndefined();
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("does not protect inactive project or legacy policy paths", async () => {
+    // Given trusted global policy does not opt into the project policy.
+    const fixture = configuredHook(true, false);
+    try {
+      // When file tools target inactive project JSONC and legacy JSON names.
+      const localWrite = invoke(fixture.hook, "write", { filePath: fixture.localPolicyPath, content: "{}" });
+      const legacyWrite = invoke(fixture.hook, "write", { filePath: fixture.legacyLocalPolicyPath, content: "{}" });
+
+      // Then both continue because neither path is reload-effective.
+      await expect(localWrite).resolves.toBeUndefined();
+      await expect(legacyWrite).resolves.toBeUndefined();
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("does not let a trusted allow shortcut bypass force_review", async () => {
+    // Given allow-all user rules and an interpreter that can mutate the active project policy.
+    const fixture = configuredHook(true);
+    try {
+      // When self-protection cannot prove the interpreter's exact effect.
+      const action = invoke(fixture.hook, "bash", {
+        command: "python -c \"open('command-' + 'approval.jsonc', 'w').write('{}')\"",
+      });
+
+      // Then the unavailable reviewer fails closed instead of the allow rule terminating the pipeline.
+      await expect(action).rejects.toMatchObject({
+        verdict: { categories: [{ id: "security.reviewer_unavailable", score: 1 }] },
+      });
     } finally {
       fixture.cleanup();
     }

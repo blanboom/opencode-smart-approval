@@ -20,8 +20,8 @@ type HookDriverResult = {
 };
 
 describe("exported plugin hook", () => {
-  test("observes the complete protection and decision pipeline through plugin.server", async () => {
-    // Given the package's exported plugin surface and isolated scanner/reviewer doubles.
+  test("observes the complete protection and decision pipeline through the exported integration", async () => {
+    // Given the package's exported integration and isolated scanner, reader, and OpenCode client doubles.
     const child = Bun.spawn([process.execPath, join(import.meta.dir, "fixtures", "hook-driver.ts")], {
       cwd: join(import.meta.dir, ".."),
       stdout: "pipe",
@@ -36,7 +36,7 @@ describe("exported plugin hook", () => {
     ]);
     const result = JSON.parse(stdout) as HookDriverResult;
 
-    // Then each stage is terminal at its intended boundary and the scanner precedes the LLM.
+    // Then each stage is terminal at its intended boundary and the scanner precedes the OpenCode reviewer.
     expect(exitCode, stderr).toBe(0);
     expect(result.afterUserAllow).toEqual({ reviewerCount: 0, scans: "" });
     expect(result.changedDirectoryProtectionError).toContain("approval configuration");

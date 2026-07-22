@@ -1,261 +1,91 @@
-import {
-  DEFAULT_REVIEW_CONNECTION,
-  DEFAULT_REVIEW_MAX_RETRIES,
-  DEFAULT_RISK_TOOL,
-  DEFAULT_SELF_PROTECTION,
-} from "./default-config";
-import { DEFAULT_REVIEWER_POLICY } from "./prompt";
-import { isLegacyGeneratedRule } from "./legacy-generated-rules";
+import { DEFAULT_TIRITH, DEFAULT_SELF_PROTECTION } from "./default-config";
+export { parsePolicyJsonc, stripJsonComments } from "./policy-jsonc";
+import { parsePolicyV3Document, type PolicyV3Document } from "./policy-v3-schema";
 import { compileRule, ruleIdentity } from "./rule-compiler";
-import type {
-  ApprovalPolicy,
-  CommandRule,
-  ReviewConfig,
-  RiskToolConfig,
-  RuleDecision,
-  RuleScope,
-  SelfProtectionConfig,
-} from "./types";
+import type { ApprovalPolicy, CommandRule, ReviewConfig, RuleDecision } from "./types";
 
-const isRecord = (value: unknown): value is Record<string, unknown> => {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+type PolicyResolution = {
+  readonly policy: ApprovalPolicy;
+  readonly allowLocalConfig: boolean;
 };
 
-export const stripJsonComments = (text: string): string => {
-  let output = "";
-  let index = 0;
-  let inString = false;
-  let escaped = false;
-  while (index < text.length) {
-    const char = text.charAt(index);
-    const next = text.charAt(index + 1);
-    if (inString) {
-      output += char;
-      if (escaped) {
-        escaped = false;
-      } else if (char === "\\") {
-        escaped = true;
-      } else if (char === '"') {
-        inString = false;
-      }
-      index += 1;
-      continue;
-    }
-    if (char === '"') {
-      inString = true;
-      output += char;
-      index += 1;
-      continue;
-    }
-    if (char === "/" && next === "/") {
-      index += 2;
-      while (index < text.length && text.charAt(index) !== "\n") index += 1;
-      if (index < text.length) output += "\n";
-      index += 1;
-      continue;
-    }
-    if (char === "/" && next === "*") {
-      index += 2;
-      while (index < text.length && !(text.charAt(index) === "*" && text.charAt(index + 1) === "/")) {
-        if (text.charAt(index) === "\n") output += "\n";
-        index += 1;
-      }
-      index += 2;
-      continue;
-    }
-    output += char;
-    index += 1;
-  }
-  return output;
+const ownValue = <T extends object, K extends keyof T>(value: T, key: K): T[K] | undefined => {
+  return Object.hasOwn(value, key) ? value[key] : undefined;
 };
 
-export const parsePolicyJsonc = (text: string): unknown => {
-  return JSON.parse(stripJsonComments(text));
-};
-
-const stringField = (record: Record<string, unknown>, key: string): string | undefined => {
-  const value = record[key];
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-};
-
-const numberField = (record: Record<string, unknown>, key: string): number | undefined => {
-  const value = record[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-};
-
-const optionalNumberField = (record: Record<string, unknown>, key: string, label: string): number | undefined => {
-  if (!(key in record)) return undefined;
-  const value = record[key];
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  throw new Error(`${label} must be an integer between 0 and 10`);
-};
-
-const booleanField = (record: Record<string, unknown>, key: string): boolean | undefined => {
-  const value = record[key];
-  return typeof value === "boolean" ? value : undefined;
-};
-
-const isValidUrl = (value: string): boolean => {
-  try {
-    new URL(value);
-    return true;
-  } catch (error) {
-    if (error instanceof TypeError) return false;
-    throw error;
-  }
-};
-
-const ruleFromUnknown = (
-  value: unknown,
+const compileRuleList = (
+  rules: NonNullable<PolicyV3Document["rules"]>["deny"],
   decision: RuleDecision,
-  index: number,
-  field: string = decision,
-): CommandRule => {
-  const label = `${field}[${String(index)}]`;
-  if (typeof value === "string" && value.length > 0) {
-    return compileRule({ label, match: value, decision, origin: "user" });
-  }
-  if (!isRecord(value)) throw new Error("rule must be a regex string or an object");
-  const match = stringField(value, "match");
-  const reason = stringField(value, "reason");
-  if (!match) throw new Error("rule object requires match");
-  const rawScope = value["scope"];
-  if (rawScope !== undefined && rawScope !== "command" && rawScope !== "segment") {
-    throw new Error("rule.scope must be command or segment");
-  }
-  const scope: RuleScope = rawScope ?? "command";
-  const rawPriority = value["priority"];
-  if (rawPriority !== undefined && (typeof rawPriority !== "number" || !Number.isSafeInteger(rawPriority))) {
-    throw new Error("rule.priority must be a safe integer");
-  }
-  const priority = rawPriority ?? 0;
-  return compileRule({
-    label,
-    match,
-    decision,
-    scope,
-    priority,
-    origin: "user",
-    ...(reason ? { reason } : {}),
-  });
-};
-
-const ruleListFromUnknown = (
-  value: unknown,
-  decision: RuleDecision,
-  retireLegacyGenerated: boolean,
-  field: string = decision,
-): readonly CommandRule[] => {
-  if (value === undefined) return [];
-  if (!Array.isArray(value)) throw new Error(`policy.rules.${field} must be an array`);
-  return value
-    .filter((rule) => !(retireLegacyGenerated && typeof rule === "string" && isLegacyGeneratedRule(decision, rule)))
-    .map((rule, index) => ruleFromUnknown(rule, decision, index, field));
-};
+  field: "deny" | "review" | "allow",
+): readonly CommandRule[] => (rules ?? []).map((rule, index) => compileRule({
+  label: `${field}[${String(index)}]`,
+  match: rule.match,
+  decision,
+  origin: "user",
+  scope: rule.scope ?? "command",
+  priority: rule.priority ?? 0,
+  ...(rule.reason === undefined ? {} : { reason: rule.reason }),
+}));
 
 const mergeRules = (
   userRules: readonly CommandRule[],
   fallbackRules: readonly CommandRule[],
 ): readonly CommandRule[] => {
   const identities = new Set<string>();
-  const merged: CommandRule[] = [];
-  for (const rule of [...userRules, ...fallbackRules]) {
+  return [...userRules, ...fallbackRules].filter((rule) => {
     const identity = ruleIdentity(rule);
-    if (identities.has(identity)) continue;
+    if (identities.has(identity)) return false;
     identities.add(identity);
-    merged.push(rule);
-  }
-  return merged;
+    return true;
+  });
 };
 
-const rulesFromUnknown = (value: unknown, retireLegacyGenerated: boolean): readonly CommandRule[] => {
-  if (!isRecord(value)) return [];
+const reviewFromDocument = (review: PolicyV3Document["review"]): ReviewConfig => {
+  const model = ownValue(review, "model");
+  const prompt = ownValue(review, "prompt");
+  return {
+    timeoutMs: ownValue(review, "timeout_ms") ?? 45_000,
+    contextMessages: ownValue(review, "context_messages") ?? 20,
+    cleanupSession: ownValue(review, "cleanup_session") ?? true,
+    ...(model === undefined ? {} : { model }),
+    ...(prompt === undefined ? {} : { prompt }),
+  };
+};
+
+export const policyDocumentFromUnknown = (
+  value: unknown,
+  fallbackRules: readonly CommandRule[],
+): PolicyResolution => {
+  const document = parsePolicyV3Document(value);
+  const rules = ownValue(document, "rules");
   const userRules = [
-    ...ruleListFromUnknown(value["deny"], "block", retireLegacyGenerated, "deny"),
-    ...ruleListFromUnknown(value["block"], "block", retireLegacyGenerated),
-    ...ruleListFromUnknown(value["review"], "review", retireLegacyGenerated),
-    ...ruleListFromUnknown(value["allow"], "allow", retireLegacyGenerated),
+    ...compileRuleList(rules === undefined ? undefined : ownValue(rules, "deny"), "block", "deny"),
+    ...compileRuleList(rules === undefined ? undefined : ownValue(rules, "review"), "review", "review"),
+    ...compileRuleList(rules === undefined ? undefined : ownValue(rules, "allow"), "allow", "allow"),
   ];
-  return userRules;
-};
-
-const reviewFromUnknown = (value: unknown): ReviewConfig => {
-  if (!isRecord(value)) {
-    return {
-      ...DEFAULT_REVIEW_CONNECTION,
-      timeoutMs: 45_000,
-      maxScriptBytes: 20_000,
-      maxToolCalls: 3,
-      maxRetries: DEFAULT_REVIEW_MAX_RETRIES,
-      contextMessages: 20,
-      prompt: DEFAULT_REVIEWER_POLICY,
-    };
-  }
-  const baseURL = stringField(value, "base_url") ?? stringField(value, "baseURL") ?? DEFAULT_REVIEW_CONNECTION.baseURL;
-  const apiKey = stringField(value, "api_key") ?? stringField(value, "apiKey") ?? DEFAULT_REVIEW_CONNECTION.apiKey;
-  const model = stringField(value, "model") ?? DEFAULT_REVIEW_CONNECTION.model;
-  const timeoutMs = numberField(value, "timeout_ms") ?? numberField(value, "timeoutMs") ?? 45_000;
-  const maxScriptBytes =
-    numberField(value, "max_script_bytes") ?? numberField(value, "maxScriptBytes") ?? 20_000;
-  const maxToolCalls = numberField(value, "max_tool_calls") ?? 3;
-  const maxRetries =
-    optionalNumberField(value, "max_retries", "review.max_retries") ??
-    optionalNumberField(value, "maxRetries", "review.max_retries") ??
-    DEFAULT_REVIEW_MAX_RETRIES;
-  const contextMessages = numberField(value, "context_messages") ?? 20;
-  const prompt = stringField(value, "prompt") ?? DEFAULT_REVIEWER_POLICY;
-  if (!isValidUrl(baseURL)) {
-    throw new Error("review.base_url must be a valid URL");
-  }
-  if (timeoutMs < 5_000 || timeoutMs > 300_000) {
-    throw new Error("review.timeout_ms must be between 5000 and 300000");
-  }
-  if (maxScriptBytes < 0 || maxScriptBytes > 200_000) {
-    throw new Error("review.max_script_bytes must be between 0 and 200000");
-  }
-  if (maxToolCalls < 0 || maxToolCalls > 10) {
-    throw new Error("review.max_tool_calls must be between 0 and 10");
-  }
-  if (!Number.isInteger(maxRetries) || maxRetries < 0 || maxRetries > 10) {
-    throw new Error("review.max_retries must be an integer between 0 and 10");
-  }
-  if (contextMessages < 0 || contextMessages > 100) {
-    throw new Error("review.context_messages must be between 0 and 100");
-  }
-  return { baseURL, apiKey, model, timeoutMs, maxScriptBytes, maxToolCalls, maxRetries, contextMessages, prompt };
-};
-
-const riskToolFromUnknown = (value: unknown): RiskToolConfig => {
-  if (!isRecord(value)) return DEFAULT_RISK_TOOL;
-  const enabled = booleanField(value, "enabled") ?? DEFAULT_RISK_TOOL.enabled;
-  const path = stringField(value, "path") ?? stringField(value, "command");
-  const timeoutMs = numberField(value, "timeout_ms") ?? numberField(value, "timeoutMs") ?? DEFAULT_RISK_TOOL.timeoutMs;
-  const failOpen = booleanField(value, "fail_open") ?? booleanField(value, "failOpen") ?? DEFAULT_RISK_TOOL.failOpen;
-  if (timeoutMs < 500 || timeoutMs > 60_000) {
-    throw new Error("tirith.timeout_ms must be between 500 and 60000");
-  }
-  return { enabled, timeoutMs, failOpen, ...(path ? { path } : {}) };
-};
-
-const selfProtectionFromUnknown = (value: unknown): SelfProtectionConfig => {
-  if (!isRecord(value)) return DEFAULT_SELF_PROTECTION;
-  const enabled = value["enabled"];
-  if (enabled === undefined) return DEFAULT_SELF_PROTECTION;
-  if (typeof enabled !== "boolean") throw new Error("self_protection.enabled must be a boolean");
-  return { enabled };
+  const tirith = ownValue(document, "tirith");
+  const tirithPath = tirith === undefined ? undefined : ownValue(tirith, "path");
+  const selfProtection = ownValue(document, "self_protection");
+  return {
+    allowLocalConfig: ownValue(document, "allow_local_config") ?? false,
+    policy: {
+      review: reviewFromDocument(document.review),
+      tirith: {
+        enabled: tirith === undefined ? DEFAULT_TIRITH.enabled : ownValue(tirith, "enabled") ?? DEFAULT_TIRITH.enabled,
+        timeoutMs: tirith === undefined ? DEFAULT_TIRITH.timeoutMs : ownValue(tirith, "timeout_ms") ?? DEFAULT_TIRITH.timeoutMs,
+        failOpen: tirith === undefined ? DEFAULT_TIRITH.failOpen : ownValue(tirith, "fail_open") ?? DEFAULT_TIRITH.failOpen,
+        ...(tirithPath === undefined ? {} : { path: tirithPath }),
+      },
+      selfProtection: {
+        enabled: selfProtection === undefined
+          ? DEFAULT_SELF_PROTECTION.enabled
+          : ownValue(selfProtection, "enabled") ?? DEFAULT_SELF_PROTECTION.enabled,
+      },
+      rules: mergeRules(userRules, fallbackRules),
+    },
+  };
 };
 
 export const policyFromUnknown = (value: unknown, fallbackRules: readonly CommandRule[]): ApprovalPolicy => {
-  if (!isRecord(value)) throw new Error("policy must be a JSON object");
-  const rawVersion = value["version"];
-  if (rawVersion !== undefined && rawVersion !== 1 && rawVersion !== 2) {
-    throw new Error("version must be 1 or 2");
-  }
-  const retireLegacyGenerated = rawVersion === undefined || rawVersion < 2;
-  return {
-    review: reviewFromUnknown(value["review"]),
-    riskTool: riskToolFromUnknown(value["tirith"] ?? value["risk_tool"]),
-    selfProtection: selfProtectionFromUnknown(value["self_protection"]),
-    rules: mergeRules(rulesFromUnknown(value["rules"], retireLegacyGenerated), fallbackRules),
-  };
+  return policyDocumentFromUnknown(value, fallbackRules).policy;
 };

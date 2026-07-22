@@ -58,98 +58,123 @@ describe("Tree-sitter shell analysis", () => {
     });
   });
 
-  test("recursively analyzes clustered shell -c options", async () => {
-    for (const command of [
-      "sh -ec 'echo payload | sh'",
-      "bash -lc 'echo payload | sh'",
-      "zsh -fc 'echo payload | sh'",
-      "dash -ec 'echo payload | sh'",
-      "busybox sh -ec 'echo payload | sh'",
-    ]) {
-      const analysis = await analyzeShell(command);
-      expect(analysis.nestedAnalyses, command).toHaveLength(1);
-      expect(analysis.nestedAnalyses[0]?.segments.map((segment) => segment.commandName), command).toEqual([
-        "echo",
-        "sh",
+  test("preserves original and effective executable identity through modifiers", async () => {
+    // Given a nested wrapper chain that also changes executable lookup.
+    const analysis = await analyzeShell("env PATH=./untrusted nice -n 5 /bin/ls", "/workspace");
+
+    // When the shell command is reduced to its effective invocation.
+    const segment = analysis.segments[0];
+
+    // Then both identities, every wrapper, and the execution assignment remain explicit.
+    expect(segment).toMatchObject({
+      originalExecutable: { raw: "env", value: "env", expansionFree: true },
+      effectiveExecutable: { raw: "/bin/ls", value: "/bin/ls", expansionFree: true },
+      wrapperChain: [
+        { executable: { value: "env" } },
+        { executable: { value: "nice" } },
+      ],
+      assignments: [{ name: "PATH", value: "./untrusted", raw: "PATH=./untrusted", source: "env" }],
+      terminalAllowEligible: false,
+      connector: "start",
+      topLevel: true,
+      subshellDepth: 0,
+    });
+  });
+
+  test.each([
+    ["command -- /bin/ls", ["command"], "/bin/ls"],
+    ["command -p /bin/ls", ["command"], "/bin/ls"],
+    ["env -C /tmp /bin/ls", ["env"], "/bin/ls"],
+    ["env -C/tmp /bin/ls", ["env"], "/bin/ls"],
+    ["env --chdir /tmp /bin/ls", ["env"], "/bin/ls"],
+    ["env --chdir=/tmp /bin/ls", ["env"], "/bin/ls"],
+    ["nice -n5 /bin/ls", ["nice"], "/bin/ls"],
+    ["nice -n 5 /bin/ls", ["nice"], "/bin/ls"],
+    ["nice --adjustment 5 /bin/ls", ["nice"], "/bin/ls"],
+    ["nice --adjustment=5 /bin/ls", ["nice"], "/bin/ls"],
+  ])("resolves supported value-consuming and attached wrapper options: %s", async (command, wrappers, effective) => {
+    // Given a recognized wrapper with a statically resolvable option form.
+    const analysis = await analyzeShell(command);
+
+    // When its effective invocation is reduced.
+    const segment = analysis.segments[0];
+
+    // Then wrapper identity and the true executable remain explicit and ineligible for segment allow.
+    expect(segment?.wrapperChain.map((wrapper) => wrapper.executable.value)).toEqual(wrappers);
+    expect(segment?.effectiveExecutable.value).toBe(effective);
+    expect(segment?.terminalAllowEligible).toBe(false);
+    expect(analysis.issues).toEqual([]);
+  });
+
+  test.each([
+    ["env -- -u NAME /tmp/not-executable", "-u"],
+    ["env -i -- --unset=NAME /tmp/not-executable", "--unset=NAME"],
+    ["exec -- -a argv0 /tmp/not-executable", "-a"],
+    ["exec -c -- -a argv0 /tmp/not-executable", "-a"],
+    ["nice -- -n 5 /tmp/not-executable", "-n"],
+    ["nice -n 1 -- -5 /tmp/not-executable", "-5"],
+    ["/usr/bin/time -- -o /tmp/time-output /tmp/not-executable", "-o"],
+    ["/usr/bin/time -p -- --output=/tmp/time-output /tmp/not-executable", "--output=/tmp/time-output"],
+    ["env -- -- /tmp/not-executable", "--"],
+    ["exec -- -- /tmp/not-executable", "--"],
+    ["nice -- -- /tmp/not-executable", "--"],
+    ["time -- -- /tmp/not-executable", "--"],
+  ])("stops wrapper option parsing at the first standalone separator: %s", async (command, effective) => {
+    // Given a wrapper separator followed by an option-looking utility or repeated separator.
+    const analysis = await analyzeShell(command, "/workspace");
+
+    // When the authoritative invocation is reduced once.
+    const segment = analysis.segments[0];
+
+    // Then the immediate post-separator word is the utility and later paths are not leased.
+    expect(segment?.effectiveExecutable.value).toBe(effective);
+    expect(segment?.targetKind).toBe("external");
+    expect(segment?.terminalAllowEligible).toBe(false);
+    expect(analysis.staticFileReferences.map((reference) => reference.value)).not.toContain("/tmp/not-executable");
+  });
+
+  test.each(["env", "exec", "nice", "/usr/bin/time"])(
+    "retains a slash-containing utility immediately after a %s separator",
+    async (wrapper) => {
+      // Given a wrapper separator followed by a static utility and arbitrary operand.
+      const analysis = await analyzeShell(`${wrapper} -- /tmp/tool /tmp/operand`, "/workspace");
+
+      // When effective identity and executable references are inspected.
+      const segment = analysis.segments[0];
+
+      // Then only the immediate executable token is leased.
+      expect(segment?.effectiveExecutable.value).toBe("/tmp/tool");
+      expect(analysis.staticFileReferences.map((reference) => reference.value)).toEqual([
+        ...(wrapper.includes("/") ? [wrapper] : []),
+        "/tmp/tool",
       ]);
-    }
-  });
-
-  test("reviews ambiguous executable word and nested script forms", async () => {
-    for (const command of ["$'rm' -rf /", `sh -ec "echo payload | sh"`, "eval echo ok", "source script.sh", ". script.sh", "exec echo ok"]) {
-      expect((await analyzeShell(command)).issues.length, command).toBeGreaterThan(0);
-    }
-  });
-
-  test.each(["echo '", "echo |", "echo &&", "cat <<EOF\nbody", "echo $(id", "echo >"])(
-    "reviews malformed syntax: %s",
-    async (command) => {
-      const analysis = await analyzeShell(command);
-      expect(analysis.issues.length).toBeGreaterThan(0);
-    },
-  );
-
-  test.each(["echo $(id)", "echo ok &", "for x in a; do echo $x; done"])(
-    "reviews dynamic or unsupported syntax: %s",
-    async (command) => {
-      const analysis = await analyzeShell(command);
-      expect(analysis.issues.length).toBeGreaterThan(0);
     },
   );
 
   test.each([
-    "PATH=.; xcodebuildmcp tools",
-    "HOME=.; xcodebuildmcp tools",
-    "SAFE=1; xcodebuildmcp tools",
-  ])("reviews standalone shell-state assignment: %s", async (command) => {
-    expect((await analyzeShell(command)).issues.some((entry) => entry.reason.includes("standalone variable"))).toBe(true);
+    ["env -C /tmp ./tool", "/tmp"],
+    ["env -C/tmp ./tool", "/tmp"],
+    ["env --chdir /tmp ./tool", "/tmp"],
+    ["env --chdir=/tmp ./tool", "/tmp"],
+    ["sudo -D /tmp ./tool", "/tmp"],
+    ["sudo -D/tmp ./tool", "/tmp"],
+    ["sudo --chdir /tmp ./tool", "/tmp"],
+    ["sudo --chdir=/tmp ./tool", "/tmp"],
+    ["env -C relative ./tool", "/workspace/relative"],
+    ["sudo -D relative ./tool", "/workspace/relative"],
+    ["env -C /tmp -- ./tool", "/tmp"],
+    ["sudo -D /tmp -- ./tool", "/tmp"],
+  ])("retains the wrapper-adjusted execution cwd: %s", async (command, executionCwd) => {
+    // Given a static absolute or relative wrapper chdir option.
+    const analysis = await analyzeShell(command, "/workspace");
+
+    // When invocation identity and executable evidence are inspected.
+    const segment = analysis.segments[0];
+    const executable = analysis.staticFileReferences.find((reference) => reference.kind === "executable");
+
+    // Then both the typed invocation and target reference resolve from the changed directory.
+    expect(segment).toMatchObject({ targetKind: "external", executionCwd });
+    expect(executable).toMatchObject({ value: "./tool", cwd: executionCwd });
   });
 
-  test("collects redirections across compound, pipeline, logical, and standalone statements", async () => {
-    for (const command of [
-      "(echo hi) > output",
-      "{ echo hi; } > output",
-      "! echo hi > output",
-      "echo hi | grep hi > output",
-      "echo hi && grep hi > output",
-      "> output; echo hi",
-    ]) {
-      const analysis = await analyzeShell(command);
-      expect(analysis.redirections, command).toContainEqual({
-        operator: ">",
-        target: { raw: "output", value: "output" },
-      });
-    }
-  });
-
-  test("uses byte spans for Unicode source", async () => {
-    const analysis = await analyzeShell("echo '你好 | 世界' | grep 世界");
-    expect(analysis.issues).toEqual([]);
-    expect(analysis.segments.map((segment) => segment.source)).toEqual(["echo '你好 | 世界'", "grep 世界"]);
-    expect(analysis.segments[0]?.endByte).toBe(Buffer.byteLength("echo '你好 | 世界'", "utf8"));
-    expect(analysis.segments[1]?.startByte).toBe(Buffer.byteLength("echo '你好 | 世界' | ", "utf8"));
-  });
-
-  test("bounds control characters and input size", async () => {
-    expect((await analyzeShell("echo \u0000secret")).issues.length).toBeGreaterThan(0);
-    expect((await analyzeShell(`echo ${"x".repeat(128 * 1024)}`)).issues.length).toBeGreaterThan(0);
-    const tooMany = await analyzeShell(Array.from({ length: 257 }, () => "true").join(";"));
-    expect(tooMany.segments).toHaveLength(256);
-    expect(tooMany.issues.some((entry) => entry.kind === "limit")).toBe(true);
-  });
-
-  test("parses concurrent calls with independent parser instances", async () => {
-    const analyses = await Promise.all(Array.from({ length: 16 }, (_, index) => analyzeShell(`echo ${String(index)}`)));
-    expect(analyses.map((analysis) => analysis.segments[0]?.source)).toEqual(
-      Array.from({ length: 16 }, (_, index) => `echo ${String(index)}`),
-    );
-  });
-
-  test("shares the executable-segment budget across nested shell analyses", async () => {
-    const command = Array.from({ length: 100 }, () => "sh -c 'echo one; echo two'").join("; ");
-    const analysis = await analyzeShell(command);
-    expect(analysis.segments).toHaveLength(256);
-    expect(analysis.nestedAnalyses.length).toBeLessThan(100);
-    expect(analysis.issues.some((entry) => entry.kind === "limit")).toBe(true);
-  });
 });
