@@ -35,6 +35,7 @@ const configuredIntegration = () => {
       environment: { XDG_DATA_HOME: "/isolated/data" },
       homeDirectory: "/unused-home",
       tempDirectory: "/tmp",
+      resolveRealPath: (value) => value,
       createToolExecuteBefore: () => before,
     },
   );
@@ -94,6 +95,57 @@ describe("approval plugin integration", () => {
     expect(denied).toBe('{"ok":false,"error":"unauthorized"}');
     expect(integration.hooks["tool.execute.before"]).toBe(before);
     expect(Object.keys(integration.hooks.tool ?? {})).toEqual([APPROVAL_READ_TOOL_NAME]);
+    await integration.hooks.dispose?.();
+  });
+
+  test("anchors a symlinked host temp spelling through its verified real path", async () => {
+    // Given macOS-style tmpdir spelling resolves through /var to an anchored /private path.
+    const adapter = new FakeAnchoredFsAdapter();
+    adapter.addDirectory("/workspace");
+    adapter.addDirectory("/private/var/folders/host-temp");
+    adapter.addFile("/private/var/folders/host-temp/script.sh", "verified-temp");
+    let factoryCalls = 0;
+    const integration = createApprovalPluginIntegration(
+      { directory: "/workspace", worktree: "/workspace" },
+      {
+        adapter,
+        tempDirectory: "/var/folders/host-temp",
+        resolveRealPath: (value) => value === "/var/folders/host-temp"
+          ? "/private/var/folders/host-temp"
+          : value,
+        createToolExecuteBefore: () => {
+          factoryCalls += 1;
+          return async () => undefined;
+        },
+      },
+    );
+    const lease = mustReaderResult(integration.activate({
+      sessionID: "child-1",
+      agent: APPROVAL_AGENT_NAME,
+      directory: "/workspace",
+      references: [{
+        kind: "shell_script",
+        raw: "/var/folders/host-temp/script.sh",
+        value: "/var/folders/host-temp/script.sh",
+        topLevelSegment: 0,
+        cwd: "/workspace",
+      }],
+    }));
+    const readTool = integration.hooks.tool?.[APPROVAL_READ_TOOL_NAME];
+    if (!readTool) throw new TypeError("missing read tool");
+
+    // When the reviewer uses the original tmpdir spelling retained in command evidence.
+    const result = await readTool.execute(
+      { path: "/var/folders/host-temp/script.sh", offset: 0 },
+      toolContext(),
+    );
+
+    // Then the verified spelling maps to the descriptor anchored at the physical directory.
+    expect({ factoryCalls, generation: lease.generation, result }).toEqual({
+      factoryCalls: 1,
+      generation: 1,
+      result: '{"ok":true,"path":"/var/folders/host-temp/script.sh","offset":0,"bytes":13,"content":"verified-temp"}',
+    });
     await integration.hooks.dispose?.();
   });
 

@@ -12,6 +12,7 @@ import {
 export type TempRootDefinition = {
   readonly spelling: string;
   readonly aliases?: readonly string[];
+  readonly verifiedAliases?: readonly string[];
 };
 
 export type ApprovalRootOptions = {
@@ -88,6 +89,21 @@ export const createApprovalRootSet = (options: ApprovalRootOptions): ReaderResul
           return failedSetup(adapter, slash.value, owned);
         }
         temp.set(view.value.absolute, view.value);
+      }
+      for (const alias of definition.verifiedAliases ?? []) {
+        const canonical = canonicalRootSpelling(alias);
+        if (!canonical.ok) return failedSetup(adapter, slash.value, owned);
+        const existing = views.get(canonical.value.absolute);
+        if (existing && !sameDescriptorIdentity(primary.value.stat, existing.stat)) {
+          return failedSetup(adapter, slash.value, owned);
+        }
+        const view = existing ?? Object.freeze({
+          ...primary.value,
+          absolute: canonical.value.absolute,
+          components: canonical.value.components,
+        });
+        views.set(view.absolute, view);
+        temp.set(view.absolute, view);
       }
     }
     const slashClosed = adapter.close(slash.value);

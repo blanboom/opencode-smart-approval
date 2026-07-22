@@ -45,6 +45,12 @@ describe("fixed approval agent registration", () => {
       registered.prompt.indexOf(APPROVAL_AGENT_TRUSTED_POLICY_OPEN),
     );
     expect(registered.prompt.endsWith(APPROVAL_AGENT_TRUSTED_POLICY_CLOSE)).toBe(true);
+    expect(registered.prompt).toContain(
+      '"categories":[{"id":"security.category","score":0.0}],"reasons":["concise reason"]',
+    );
+    expect(registered.prompt).toContain(
+      "The first response character must be { and the last must be }; never use Markdown, backticks, or a code fence.",
+    );
     expect(config).toEqual({
       small_model: "fixture/reviewer/model",
       agent: {

@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { tool, type Hooks, type PluginInput } from "@opencode-ai/plugin";
@@ -51,6 +52,7 @@ export type ApprovalPluginIntegrationOptions = {
   readonly environment?: ApprovalHostEnvironment;
   readonly homeDirectory?: string;
   readonly tempDirectory?: string;
+  readonly resolveRealPath?: (value: string) => string;
   readonly reviewConfig?: ReviewConfig;
   readonly createToolExecuteBefore: ApprovalToolHookFactory;
 };
@@ -89,12 +91,20 @@ const tempRootsFor = (
   worktree: string,
   workspace: string,
   temporary: string,
+  resolveRealPath: (value: string) => string,
 ): readonly TempRootDefinition[] | undefined => {
-  const canonicalTemporary = canonicalAbsolute(temporary);
+  const lexicalTemporary = canonicalAbsolute(temporary);
+  if (!lexicalTemporary) return undefined;
+  let canonicalTemporary: string | undefined;
+  try {
+    canonicalTemporary = canonicalAbsolute(resolveRealPath(lexicalTemporary));
+  } catch (error) {
+    if (!(error instanceof Error)) throw error;
+  }
   if (!canonicalTemporary) return undefined;
   const roots: TempRootDefinition[] = [{
-    spelling: temporary,
-    aliases: canonicalTemporary === temporary ? [] : [canonicalTemporary],
+    spelling: canonicalTemporary,
+    verifiedAliases: canonicalTemporary === lexicalTemporary ? [] : [lexicalTemporary],
   }];
   if (worktree !== workspace && worktree !== canonicalTemporary) roots.push({ spelling: worktree });
   return Object.freeze(roots);
@@ -116,9 +126,16 @@ const readerFor = (
   options: ApprovalPluginIntegrationOptions,
 ): { readonly reader?: ApprovalReader; readonly workspace?: string; readonly worktree?: string } => {
   const adapter = options.adapter ?? createPosixAnchoredFsAdapter();
+  const resolveRealPath = options.resolveRealPath
+    ?? (options.adapter ? ((value: string): string => value) : realpathSync);
   const { workspace, worktree } = roots;
   const tempRoots = workspace && worktree
-    ? tempRootsFor(worktree, workspace, options.tempDirectory ?? tmpdir())
+    ? tempRootsFor(
+      worktree,
+      workspace,
+      options.tempDirectory ?? tmpdir(),
+      resolveRealPath,
+    )
     : undefined;
   if (!workspace || !worktree || !tempRoots) {
     adapter.dispose();

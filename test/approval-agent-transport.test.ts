@@ -83,6 +83,22 @@ const contractCode = (operation: () => void): string => {
 };
 
 describe("app.agents runtime transport", () => {
+  test("ignores unrelated agent field evolution while keeping the fixed candidate strict", () => {
+    // Given the host returns one valid fixed agent beside unrelated agents with independent fields.
+    const expected = registerApprovalAgent({});
+    const unrelated = {
+      name: "host-future-agent",
+      futureRuntimeField: { independentlyNormalized: true },
+    };
+    const fixed = fixedTransportAgent(expected.prompt);
+
+    // When runtime identity validation selects candidates by their own exact name.
+    const validated = validateResolvedApprovalAgent([unrelated, fixed], expected);
+
+    // Then unrelated schema evolution cannot create a false reviewer mismatch.
+    expect(validated.name).toBe(APPROVAL_AGENT_NAME);
+  });
+
   test("normalizes only the exact nullable transport fields from fixed and collision agents", () => {
     // Given exact 1.17.14 app.agents key and null shapes from the isolated SDK fixture.
     const expected = registerApprovalAgent({});

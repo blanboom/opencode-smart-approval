@@ -96,6 +96,28 @@ const normalizeRuntimeTransport = (input: unknown): unknown => {
   });
 };
 
+const fixedAgentCandidates = (input: unknown): readonly object[] => {
+  if (!Array.isArray(input)) throw new ApprovalAgentContractError("invalid_runtime_schema");
+  const candidates: object[] = [];
+  try {
+    for (const value of input) {
+      if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        throw new ApprovalAgentContractError("invalid_runtime_schema");
+      }
+      const name = Object.getOwnPropertyDescriptor(value, "name");
+      if (!name || !("value" in name) || typeof name.value !== "string") {
+        throw new ApprovalAgentContractError("invalid_runtime_schema");
+      }
+      if (name.value === APPROVAL_AGENT_NAME) candidates.push(value);
+    }
+  } catch (error) {
+    if (error instanceof ApprovalAgentContractError) throw error;
+    if (error instanceof Error) throw new ApprovalAgentContractError("invalid_runtime_schema");
+    throw error;
+  }
+  return candidates;
+};
+
 const hasExpectedModel = (agent: ResolvedApprovalAgent, model: string | undefined): boolean => {
   const expected = normalizedModel(model);
   switch (expected.kind) {
@@ -121,10 +143,9 @@ export const validateResolvedApprovalAgent = (
   if (runtimeExpectation !== undefined && !runtimeExpectation.success) {
     throw new ApprovalAgentContractError("invalid_config");
   }
-  const runtime = RuntimeAgentListSchema.safeParse(normalizeRuntimeTransport(input));
+  const runtime = RuntimeAgentListSchema.safeParse(normalizeRuntimeTransport(fixedAgentCandidates(input)));
   if (!runtime.success) throw new ApprovalAgentContractError("invalid_runtime_schema");
-  const matches = runtime.data.filter((agent) => agent.name === APPROVAL_AGENT_NAME);
-  const agent = matches.length === 1 ? matches[0] : undefined;
+  const agent = runtime.data.length === 1 ? runtime.data[0] : undefined;
   if (!agent) throw new ApprovalAgentContractError("agent_identity_mismatch");
   if (
     agent.description !== expected.data.description ||
